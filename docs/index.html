@@ -3,20 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Distributed ML Worker Downloads</title>
+    <title>Join the Distributed ML Worker Network</title>
     <style>
       :root {
         color-scheme: light;
-        --bg: #f7f8fb;
-        --surface: #ffffff;
-        --ink: #18202f;
-        --muted: #5b6475;
-        --line: #d8dde8;
-        --accent: #0f766e;
-        --accent-strong: #0b5d56;
+        --bg: #f4f6f8;
+        --ink: #101828;
+        --muted: #667085;
+        --line: #d0d5dd;
+        --panel: #ffffff;
+        --panel-soft: #f9fafb;
         --code: #111827;
-        --code-soft: #1f2937;
-        --blue: #2563eb;
+        --code-text: #f3f4f6;
+        --accent: #0f766e;
+        --accent-2: #2563eb;
       }
 
       * {
@@ -35,17 +35,17 @@
       }
 
       main {
-        width: min(1120px, calc(100% - 32px));
+        width: min(1040px, calc(100% - 32px));
         margin: 0 auto;
-        padding: 40px 0;
+        padding: 34px 0 48px;
       }
 
-      .topbar {
+      header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
-        margin-bottom: 28px;
+        gap: 20px;
+        padding-bottom: 52px;
       }
 
       .brand {
@@ -56,385 +56,236 @@
       }
 
       .mark {
-        display: grid;
-        width: 40px;
-        height: 40px;
-        place-items: center;
+        width: 34px;
+        height: 34px;
         border: 1px solid var(--line);
         border-radius: 8px;
-        background: var(--surface);
-        color: var(--accent);
+        background: var(--panel);
       }
 
-      .brand-title {
-        margin: 0;
-        font-size: 17px;
+      .brand span {
+        display: block;
+      }
+
+      .brand-name {
+        font-size: 15px;
+        font-weight: 750;
         line-height: 1.2;
-        font-weight: 700;
       }
 
-      .brand-subtitle {
-        margin: 2px 0 0;
+      .brand-meta {
         color: var(--muted);
-        font-size: 13px;
+        font-size: 12px;
+        line-height: 1.2;
+        margin-top: 3px;
       }
 
-      .repo-link {
-        flex: 0 0 auto;
-        color: var(--blue);
+      .repo {
+        color: var(--accent-2);
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 650;
         text-decoration: none;
+        white-space: nowrap;
       }
 
-      .repo-link:hover {
+      .repo:hover {
         text-decoration: underline;
       }
 
       .hero {
-        display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-        gap: 28px;
-        align-items: stretch;
-        margin-bottom: 26px;
-      }
-
-      .intro {
-        padding: 28px 0;
+        max-width: 760px;
+        padding-bottom: 34px;
       }
 
       h1 {
-        max-width: 720px;
         margin: 0;
-        font-size: clamp(36px, 6vw, 64px);
-        line-height: 1;
+        font-size: clamp(38px, 7vw, 72px);
+        line-height: 0.96;
         letter-spacing: 0;
       }
 
       .lede {
-        max-width: 680px;
-        margin: 18px 0 0;
+        margin: 20px 0 0;
+        max-width: 700px;
         color: var(--muted);
         font-size: 18px;
-        line-height: 1.6;
+        line-height: 1.65;
       }
 
-      .status-strip {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 24px;
-      }
-
-      .status {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        min-height: 34px;
-        padding: 0 12px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        background: var(--surface);
-        color: var(--muted);
-        font-size: 13px;
-        font-weight: 600;
-      }
-
-      .terminal {
-        display: grid;
-        align-content: start;
-        min-height: 300px;
-        padding: 18px;
-        border: 1px solid #253040;
-        border-radius: 8px;
-        background: var(--code);
-        box-shadow: 0 18px 45px rgb(24 32 47 / 12%);
-        color: #d9e7ff;
-        overflow: hidden;
-      }
-
-      .terminal-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 16px;
-        color: #9ca3af;
-        font-size: 12px;
-        font-weight: 700;
-      }
-
-      .dots {
-        display: flex;
-        gap: 6px;
-      }
-
-      .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-      }
-
-      .red {
-        background: #ef4444;
-      }
-
-      .yellow {
-        background: #eab308;
-      }
-
-      .green {
-        background: #22c55e;
-      }
-
-      .terminal pre {
-        margin: 0;
-        white-space: pre-wrap;
-        color: #d1d5db;
-        font-family:
-          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        font-size: 13px;
-        line-height: 1.7;
-      }
-
-      .terminal strong {
-        color: #5eead4;
-        font-weight: 700;
-      }
-
-      .downloads {
+      .commands {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 18px;
       }
 
-      .download-panel {
+      .panel {
         min-width: 0;
         border: 1px solid var(--line);
         border-radius: 8px;
-        background: var(--surface);
-        padding: 20px;
+        background: var(--panel);
+        overflow: hidden;
       }
 
       .panel-head {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
-        gap: 14px;
-        margin-bottom: 16px;
+        gap: 16px;
+        padding: 18px 18px 14px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel-soft);
       }
 
       h2 {
         margin: 0;
-        font-size: 22px;
-        line-height: 1.2;
+        font-size: 19px;
+        line-height: 1.25;
         letter-spacing: 0;
       }
 
-      .file-badge {
-        flex: 0 0 auto;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        padding: 7px 10px;
+      .shell {
         color: var(--muted);
-        font-family:
-          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
         font-size: 12px;
-      }
-
-      .download-button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        width: 100%;
-        min-height: 48px;
-        margin-bottom: 16px;
-        border-radius: 8px;
-        background: var(--accent);
-        color: #ffffff;
-        font-size: 15px;
         font-weight: 700;
-        text-decoration: none;
+        line-height: 1.5;
+        white-space: nowrap;
       }
 
-      .download-button:hover {
-        background: var(--accent-strong);
-      }
-
-      .download-button svg {
-        width: 18px;
-        height: 18px;
-        flex: 0 0 auto;
-      }
-
-      .command-label {
-        margin: 0 0 8px;
-        color: var(--muted);
-        font-size: 13px;
-        font-weight: 700;
-      }
-
-      .command {
+      pre {
         margin: 0;
-        min-height: 148px;
+        min-height: 315px;
         overflow-x: auto;
-        border-radius: 8px;
-        background: var(--code-soft);
-        color: #e5e7eb;
-        padding: 14px;
+        background: var(--code);
+        color: var(--code-text);
+        padding: 18px;
         font-family:
           "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        font-size: 12px;
-        line-height: 1.65;
+        font-size: 12.5px;
+        line-height: 1.75;
         white-space: pre;
       }
 
-      .note {
-        margin: 18px 0 0;
+      code {
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      }
+
+      .footer-note {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        margin-top: 18px;
+        padding-top: 18px;
         color: var(--muted);
+        border-top: 1px solid var(--line);
         font-size: 14px;
         line-height: 1.6;
+      }
+
+      .footer-note p {
+        margin: 0;
+      }
+
+      .accent {
+        color: var(--accent);
+        font-weight: 750;
       }
 
       @media (max-width: 860px) {
         main {
           width: min(100% - 24px, 680px);
-          padding: 24px 0;
+          padding-top: 22px;
         }
 
-        .topbar,
-        .hero,
-        .downloads {
-          grid-template-columns: 1fr;
-        }
-
-        .topbar {
+        header {
           align-items: flex-start;
-        }
-
-        .hero {
-          display: block;
-        }
-
-        .intro {
-          padding: 12px 0 22px;
+          flex-direction: column;
+          padding-bottom: 34px;
         }
 
         h1 {
-          font-size: clamp(34px, 11vw, 48px);
+          font-size: clamp(36px, 12vw, 54px);
         }
 
         .lede {
           font-size: 16px;
         }
 
-        .terminal {
-          min-height: 240px;
+        .commands,
+        .footer-note {
+          grid-template-columns: 1fr;
+          flex-direction: column;
         }
 
-        .panel-head {
-          align-items: flex-start;
-          flex-direction: column;
+        pre {
+          min-height: auto;
+          font-size: 12px;
         }
       }
     </style>
   </head>
   <body>
     <main>
-      <header class="topbar">
+      <header>
         <div class="brand">
-          <div class="mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 4v16"></path>
-              <path d="M4 8h16"></path>
-              <path d="M4 16h16"></path>
-              <circle cx="12" cy="8" r="2"></circle>
-              <circle cx="7" cy="16" r="2"></circle>
-              <circle cx="17" cy="16" r="2"></circle>
-            </svg>
-          </div>
+          <div class="mark" aria-hidden="true"></div>
           <div>
-            <p class="brand-title">Distributed ML Worker Downloads</p>
-            <p class="brand-subtitle">Tailscale-connected training workers</p>
+            <span class="brand-name">Distributed ML Training</span>
+            <span class="brand-meta">Worker network bootstrap</span>
           </div>
         </div>
-        <a class="repo-link" href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">View repository</a>
+        <a class="repo" href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">GitHub repository</a>
       </header>
 
       <section class="hero" aria-labelledby="page-title">
-        <div class="intro">
-          <h1 id="page-title">Download a worker bootstrap script.</h1>
-          <p class="lede">
-            Pick the script for the machine that will join the distributed training cluster.
-            Each bootstrap sets up dependencies, connects through Tailscale, and starts the worker.
-          </p>
-          <div class="status-strip" aria-label="Worker requirements">
-            <span class="status">Python 3.11</span>
-            <span class="status">Tailscale</span>
-            <span class="status">PyTorch selected per device</span>
-          </div>
-        </div>
-        <aside class="terminal" aria-label="Worker startup preview">
-          <div class="terminal-head">
-            <div class="dots" aria-hidden="true">
-              <span class="dot red"></span>
-              <span class="dot yellow"></span>
-              <span class="dot green"></span>
-            </div>
-            <span>worker console</span>
-          </div>
-          <pre><strong>[worker]</strong> detecting hardware
-<strong>[worker]</strong> connecting to leader
-<strong>[worker]</strong> sending heartbeat
-<strong>[worker]</strong> waiting for training run
-<strong>[worker]</strong> ready</pre>
-        </aside>
+        <h1 id="page-title">Join a worker node.</h1>
+        <p class="lede">
+          Run the command block for your operating system. It downloads the latest
+          project code, installs the required local dependencies, authenticates
+          Tailscale when needed, and starts the worker process.
+        </p>
       </section>
 
-      <section class="downloads" aria-label="Download worker scripts">
-        <article class="download-panel">
+      <section class="commands" aria-label="Worker setup commands">
+        <article class="panel">
           <div class="panel-head">
-            <h2>macOS Worker</h2>
-            <span class="file-badge">bootstrap_macos.sh</span>
+            <h2>macOS</h2>
+            <span class="shell">Terminal</span>
           </div>
-          <a class="download-button" href="https://raw.githubusercontent.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/main/bootstrap_macos.sh" download>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <path d="M7 10l5 5 5-5"></path>
-              <path d="M12 15V3"></path>
-            </svg>
-            Download for macOS
-          </a>
-          <p class="command-label">Run from Terminal</p>
-          <pre class="command">curl -L -O https://raw.githubusercontent.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/main/bootstrap_macos.sh
-chmod +x bootstrap_macos.sh
-./bootstrap_macos.sh</pre>
+          <pre><code>mkdir -p "$HOME/dml-worker" &amp;&amp; \
+cd "$HOME/dml-worker" &amp;&amp; \
+curl -L "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -o worker.zip &amp;&amp; \
+unzip -q -o worker.zip &amp;&amp; \
+cd Distributed_MachineLearning_Training_Inference-main &amp;&amp; \
+chmod +x bootstrap_macos.sh &amp;&amp; \
+./bootstrap_macos.sh</code></pre>
         </article>
 
-        <article class="download-panel">
+        <article class="panel">
           <div class="panel-head">
-            <h2>Windows Worker</h2>
-            <span class="file-badge">bootstrap_windows.ps1</span>
+            <h2>Windows</h2>
+            <span class="shell">PowerShell</span>
           </div>
-          <a class="download-button" href="https://raw.githubusercontent.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/main/bootstrap_windows.ps1" download>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <path d="M7 10l5 5 5-5"></path>
-              <path d="M12 15V3"></path>
-            </svg>
-            Download for Windows
-          </a>
-          <p class="command-label">Run from PowerShell</p>
-          <pre class="command">Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/main/bootstrap_windows.ps1" -OutFile "bootstrap_windows.ps1"
-powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1</pre>
+          <pre><code>$work = Join-Path $HOME "dml-worker"
+New-Item -ItemType Directory -Force $work | Out-Null
+Set-Location $work
+Invoke-WebRequest -Uri "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -OutFile "worker.zip"
+Expand-Archive -Path "worker.zip" -DestinationPath "." -Force
+Set-Location ".\Distributed_MachineLearning_Training_Inference-main"
+powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1</code></pre>
         </article>
       </section>
 
-      <p class="note">
-        The scripts connect to the default leader configured in the project. Set
-        <code>LEADER_HOST</code> and <code>LEADER_PORT</code> before running a script
-        when testing against a different leader.
-      </p>
+      <section class="footer-note" aria-label="Connection details">
+        <p>
+          Default leader:
+          <span class="accent">ruturajs-macbook-pro.taild91634.ts.net:8787</span>
+        </p>
+        <p>
+          For a different leader, set <code>LEADER_HOST</code> and
+          <code>LEADER_PORT</code> before running the final bootstrap command.
+        </p>
+      </section>
     </main>
   </body>
 </html>

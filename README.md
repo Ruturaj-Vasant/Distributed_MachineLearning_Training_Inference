@@ -7,9 +7,9 @@ plus two training modes:
 - `distributed` uses CIFAR-10, a CNN, weighted data shards, rank assignment,
   and `torch.distributed` gradient synchronization.
 
-## Worker Downloads
+## Worker Join Page
 
-Worker bootstrap scripts are available from the GitHub Pages download page:
+Copy-paste worker setup commands are available from the GitHub Pages join page:
 
 ```text
 https://ruturaj-vasant.github.io/Distributed_MachineLearning_Training_Inference/
