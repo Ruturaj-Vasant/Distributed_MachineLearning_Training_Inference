@@ -1,0 +1,7 @@
+.venv/
+.data/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.dml_worker_id
+.DS_Store
