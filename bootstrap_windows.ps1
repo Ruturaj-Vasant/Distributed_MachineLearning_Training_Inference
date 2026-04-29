@@ -79,14 +79,21 @@ function Invoke-Checked {
         [string[]]$Arguments
     )
 
-    if (-not (Test-Path $FilePath)) {
+    if (Test-Path $FilePath) {
+        $resolvedPath = $FilePath
+    } else {
+        $resolvedPath = Get-CommandPath $FilePath
+    }
+
+    if (-not $resolvedPath) {
         throw "Executable not found: $FilePath"
     }
 
-    & "$FilePath" @Arguments
+    & "$resolvedPath" @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+    $exitCode = $LASTEXITCODE
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code ${exitCode}: $resolvedPath $($Arguments -join ' ')"
     }
 }
 
@@ -106,9 +113,10 @@ function Invoke-Python311 {
     }
 
     $args = @($PythonSpec.LauncherArgs) + $Arguments
-    & "$exe" @args
-    if ($LASTEXITCODE -ne 0) {
-        throw "Python 3.11 command failed with exit code ${LASTEXITCODE}: $exe $($args -join ' ')"
+    & "$exe" @args 2>&1 | ForEach-Object { Write-Host $_ }
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Python 3.11 command failed with exit code ${exitCode}: $exe $($args -join ' ')"
     }
 }
 
@@ -181,7 +189,13 @@ function Ensure-WingetCommand {
     }
 
     Write-Step "Installing $PackageId via winget"
-    winget install --id $PackageId --exact --accept-source-agreements --accept-package-agreements
+    Invoke-Checked -FilePath "winget.exe" -Arguments @(
+        "install",
+        "--id", $PackageId,
+        "--exact",
+        "--accept-source-agreements",
+        "--accept-package-agreements"
+    )
     Refresh-Path
 }
 
@@ -249,7 +263,13 @@ function Ensure-Python311 {
     }
 
     Write-Step "Installing Python 3.11 via winget"
-    winget install --id Python.Python.3.11 --exact --accept-source-agreements --accept-package-agreements
+    Invoke-Checked -FilePath "winget.exe" -Arguments @(
+        "install",
+        "--id", "Python.Python.3.11",
+        "--exact",
+        "--accept-source-agreements",
+        "--accept-package-agreements"
+    )
     Refresh-Path
     Start-Sleep -Seconds 5
 
@@ -307,7 +327,13 @@ function Ensure-Tailscale {
         Write-Step "Tailscale CLI already present"
     } else {
         Write-Step "Installing Tailscale via winget"
-        winget install --id Tailscale.Tailscale --exact --accept-source-agreements --accept-package-agreements
+        Invoke-Checked -FilePath "winget.exe" -Arguments @(
+            "install",
+            "--id", "Tailscale.Tailscale",
+            "--exact",
+            "--accept-source-agreements",
+            "--accept-package-agreements"
+        )
         Refresh-Path
         $installedNow = $true
         $tailscale = Find-Tailscale
@@ -340,7 +366,7 @@ function Ensure-Tailscale {
     if ($match.Success) {
         Start-Process $match.Value
     } else {
-        & "$tailscale" up
+        Invoke-Checked -FilePath $tailscale -Arguments @("up")
     }
 
     Write-Step "Waiting for Tailscale authentication to finish"
