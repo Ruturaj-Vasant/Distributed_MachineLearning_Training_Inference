@@ -220,25 +220,26 @@ function Find-Python311 {
 }
 
 function Ensure-Python311 {
-    # 1) Prefer the launcher, by name or by path
     $pyCandidates = @(
-        "py",
-        "py.exe",
-        (Get-CommandPath "py"),
-        (Get-CommandPath "py.exe"),
         "$env:SystemRoot\py.exe",
-        "$env:LocalAppData\Programs\Python\Launcher\py.exe"
+        "py.exe",
+        "py",
+        (Get-CommandPath "py.exe"),
+        (Get-CommandPath "py")
     ) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
 
     foreach ($py in $pyCandidates) {
-        $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
-        if (Test-PythonSpec $spec) {
-            Write-Step "Using Python via py launcher: $py -3.11"
-            return $spec
+        try {
+            $probe = & $py -3.11 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1
+            if ($LASTEXITCODE -eq 0 -and ($probe | Select-Object -First 1) -eq "3.11") {
+                Write-Step "Using Python via py launcher: $py -3.11"
+                return New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
+            }
+        } catch {
+            continue
         }
     }
 
-    # 2) Then try installed Python locations
     $python = Find-Python311
     if ($python) {
         $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
@@ -246,22 +247,23 @@ function Ensure-Python311 {
         return $python
     }
 
-    # 3) Only now install Python
     Write-Step "Installing Python 3.11 via winget"
     winget install --id Python.Python.3.11 --exact --accept-source-agreements --accept-package-agreements
     Refresh-Path
     Start-Sleep -Seconds 5
 
-    # 4) Retry launcher first after install
     foreach ($py in $pyCandidates) {
-        $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
-        if (Test-PythonSpec $spec) {
-            Write-Step "Using Python via py launcher after install: $py -3.11"
-            return $spec
+        try {
+            $probe = & $py -3.11 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1
+            if ($LASTEXITCODE -eq 0 -and ($probe | Select-Object -First 1) -eq "3.11") {
+                Write-Step "Using Python via py launcher after install: $py -3.11"
+                return New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
+            }
+        } catch {
+            continue
         }
     }
 
-    # 5) Retry other discovery paths
     $python = Find-Python311
     if ($python) {
         $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
