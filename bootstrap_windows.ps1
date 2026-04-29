@@ -62,6 +62,41 @@ function Invoke-Checked {
     }
 }
 
+function Get-Python311RegistryCandidates {
+    $paths = @(
+        "HKCU:\Software\Python\PythonCore\3.11\InstallPath",
+        "HKLM:\Software\Python\PythonCore\3.11\InstallPath",
+        "HKLM:\Software\WOW6432Node\Python\PythonCore\3.11\InstallPath"
+    )
+    $candidates = @()
+    foreach ($path in $paths) {
+        $key = Get-Item -Path $path -ErrorAction SilentlyContinue
+        if (-not $key) { continue }
+        $executable = [string]$key.GetValue("ExecutablePath")
+        $installPath = [string]$key.GetValue("")
+        if ($executable) { $candidates += $executable }
+        if ($installPath) { $candidates += (Join-Path $installPath "python.exe") }
+    }
+    return $candidates
+}
+
+function Get-Python311DirectoryCandidates {
+    $roots = @(
+        (Join-Path $env:LocalAppData "Programs\Python"),
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    $candidates = @()
+    foreach ($root in $roots) {
+        $dirs = Get-ChildItem -Path $root -Directory -Filter "Python311*" -ErrorAction SilentlyContinue
+        foreach ($dir in $dirs) {
+            $candidates += (Join-Path $dir.FullName "python.exe")
+        }
+    }
+    return $candidates
+}
+
 function Ensure-Winget {
     if (Get-CommandPath "winget.exe") {
         Write-Step "winget already present"
@@ -95,8 +130,13 @@ function Ensure-WingetCommand {
 }
 
 function Find-Python311 {
-    $py = Get-CommandPath "py.exe"
-    if ($py) {
+    $pyCandidates = @(
+        (Get-CommandPath "py.exe"),
+        (Join-Path $env:SystemRoot "py.exe"),
+        (Join-Path $env:LocalAppData "Programs\Python\Launcher\py.exe")
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+    foreach ($py in $pyCandidates) {
         $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
         if (Test-PythonSpec $spec) { return $spec }
     }
@@ -105,8 +145,12 @@ function Find-Python311 {
         (Get-CommandPath "python3.11.exe"),
         (Get-CommandPath "python.exe"),
         "$env:LocalAppData\Programs\Python\Python311\python.exe",
-        "$env:ProgramFiles\Python311\python.exe"
-    ) | Where-Object { $_ -and (Test-Path $_) }
+        "$env:ProgramFiles\Python311\python.exe",
+        "${env:ProgramFiles(x86)}\Python311\python.exe"
+    )
+    $candidates += Get-Python311RegistryCandidates
+    $candidates += Get-Python311DirectoryCandidates
+    $candidates = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
     foreach ($candidate in $candidates) {
         if ($candidate -like "*\Microsoft\WindowsApps\*") {
@@ -145,10 +189,11 @@ function Ensure-Python311 {
     Write-Step "Installing Python 3.11 via winget"
     winget install --id Python.Python.3.11 --exact --accept-source-agreements --accept-package-agreements
     Refresh-Path
+    Start-Sleep -Seconds 2
 
     $python = Find-Python311
     if (-not $python) {
-        throw "Python 3.11 installation completed but python was not found on PATH. Open a new PowerShell and re-run this script."
+        throw "Python 3.11 installation completed but python.exe was not found through PATH, registry, or common install folders. Open a new PowerShell and re-run this script. If it still fails, run: py -3.11 --version"
     }
     return $python
 }
