@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -162,6 +163,7 @@ def run_training(
                 )
                 return
 
+            epoch_started = time.monotonic()
             result = _run_epoch(
                 model=model,
                 optimizer=optimizer,
@@ -172,6 +174,7 @@ def run_training(
                 stop_event=stop,
             )
             dist.barrier()
+            duration_seconds = time.monotonic() - epoch_started
             result_q.put(
                 {
                     "type": "distributed_epoch",
@@ -180,6 +183,7 @@ def run_training(
                     "loss": float(result["loss"]),
                     "batches": int(result["batches"]),
                     "device": str(result["device"]),
+                    "duration_seconds": duration_seconds,
                 }
             )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import csv
 import datetime as dt
 import pickle
 import queue
@@ -46,6 +47,36 @@ class Assignment:
     worker_id: str
     start_batch: int
     num_batches: int
+
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        widths = [max(width, len(cell)) for width, cell in zip(widths, row)]
+    lines = [
+        "  ".join(text.ljust(width) for text, width in zip(headers, widths)),
+        "  ".join("-" * width for width in widths),
+    ]
+    lines.extend("  ".join(text.ljust(width) for text, width in zip(row, widths)) for row in rows)
+    return lines
+
+
+def _metric_bars(
+    title: str,
+    values: list[tuple[int, float, str]],
+    width: int = 32,
+    scale_max: float | None = None,
+) -> list[str]:
+    if not values:
+        return []
+    maximum = scale_max if scale_max is not None else max(value for _, value, _ in values)
+    maximum = max(maximum, 1e-12)
+    lines = [title]
+    for epoch, value, label in values:
+        filled = max(1, int(round((value / maximum) * width))) if value > 0 else 0
+        bar = "#" * min(width, filled)
+        lines.append(f"{epoch:>3} | {bar.ljust(width)} {label}")
+    return lines
 
 
 class Leader:
@@ -107,7 +138,7 @@ class Leader:
         )
         sockets = ", ".join(str(sock.getsockname()) for sock in (self._server.sockets or []))
         print(f"[leader] listening on {sockets}; mode={self.training_mode}")
-        print("[leader] commands: workers | start | help | quit")
+        self.print_help()
 
         tasks = [
             asyncio.create_task(self._monitor_heartbeats(), name="heartbeat-monitor"),
@@ -265,20 +296,34 @@ class Leader:
             if command in {"workers", "w"}:
                 self.print_workers()
             elif command == "start":
-                epochs = self.epochs
-                if len(command_parts) > 1:
-                    with contextlib.suppress(ValueError):
-                        epochs = int(command_parts[1])
+                if len(command_parts) > 2:
+                    print("[leader] usage: start [positive_epoch_count]")
+                    continue
+                try:
+                    epochs = self._parse_start_epochs(command_parts[1:])
+                except ValueError as exc:
+                    print(f"[leader] {exc}")
+                    continue
                 await self._start_training(epochs)
             elif command in {"help", "h", "?"}:
-                print("[leader] commands: workers | start [epochs] | help | quit")
-                print("[leader] select training mode at startup with --mode federated|distributed")
+                self.print_help()
             elif command in {"quit", "exit"}:
                 print("[leader] shutting down")
                 self._stop.set()
                 return
             elif command:
                 print(f"[leader] unknown command: {command}")
+
+    def _parse_start_epochs(self, parts: list[str]) -> int:
+        if not parts:
+            return self.epochs
+        try:
+            epochs = int(parts[0])
+        except ValueError as exc:
+            raise ValueError("epoch count must be a positive integer, for example: start 5") from exc
+        if epochs <= 0:
+            raise ValueError("epoch count must be greater than zero")
+        return epochs
 
     async def _start_training(self, epochs: int) -> None:
         if self._training_task is not None and not self._training_task.done():
@@ -306,6 +351,7 @@ class Leader:
 
         run_id = uuid.uuid4().hex[:12]
         model_state = initial_model_payload()
+        run_rows: list[dict[str, Any]] = []
         print(
             f"[leader] training run {run_id} started: "
             f"epochs={epochs}, batches/epoch={self.train_batches_per_epoch}, "
@@ -313,19 +359,20 @@ class Leader:
         )
 
         for epoch in range(1, epochs + 1):
+            epoch_started = time.monotonic()
             async with self._lock:
                 workers = list(self.workers.values())
 
             if not workers:
                 print(f"[leader] epoch {epoch}: no workers connected; stopping training")
-                return
+                break
 
             assignments = self._allocate_batches(workers, self.train_batches_per_epoch, run_id, epoch)
             self._print_allocation(epoch, assignments)
             results = await self._run_epoch(run_id, epoch, model_state, assignments)
             if not results:
                 print(f"[leader] epoch {epoch}: no successful worker results; stopping training")
-                return
+                break
 
             model_state = await asyncio.to_thread(average_state_payloads, results)
             train_samples = sum(int(result["samples"]) for result in results)
@@ -346,8 +393,22 @@ class Leader:
                 f"val_acc={float(metrics['accuracy']) * 100:.2f}% "
                 f"samples={train_samples}"
             )
+            run_rows.append(
+                {
+                    "epoch": epoch,
+                    "workers": len({str(result["worker_id"]) for result in results}),
+                    "samples": train_samples,
+                    "train_loss": train_loss,
+                    "val_loss": float(metrics["loss"]),
+                    "val_acc": float(metrics["accuracy"]),
+                    "duration_seconds": time.monotonic() - epoch_started,
+                }
+            )
 
-        print(f"[leader] training run {run_id} complete")
+        if run_rows:
+            self._print_and_save_federated_summary(run_id, run_rows)
+        status = "complete" if len(run_rows) == epochs else "ended"
+        print(f"[leader] training run {run_id} {status}")
 
     async def _run_distributed_training(self, epochs: int) -> None:
         from .distributed_data import (
@@ -410,6 +471,7 @@ class Leader:
         )
 
         distributed_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        run_rows: list[dict[str, Any]] = []
         self._distributed_waiters[run_id] = distributed_q
         try:
             if not await self._send_distributed_shards(
@@ -464,7 +526,7 @@ class Leader:
             active_worker_ids = {worker.worker_id for worker in workers}
             completed_worker_ids: set[str] = set()
             while not leader_task.done():
-                if not self._drain_local_distributed_results(result_q):
+                if not self._drain_local_distributed_results(result_q, run_rows, world_size):
                     stop_event.set()
                 if not await self._drain_worker_distributed_results(
                     distributed_q,
@@ -483,12 +545,14 @@ class Leader:
                 await asyncio.sleep(0.25)
 
             await leader_task
-            self._drain_local_distributed_results(result_q)
+            self._drain_local_distributed_results(result_q, run_rows, world_size)
             await self._wait_for_worker_distributed_completion(
                 distributed_q,
                 active_worker_ids,
                 completed_worker_ids,
             )
+            if run_rows:
+                self._print_and_save_distributed_summary(run_id, run_rows)
             print(f"[leader] distributed run {run_id} finished")
         finally:
             self._distributed_waiters.pop(run_id, None)
@@ -560,6 +624,8 @@ class Leader:
     def _drain_local_distributed_results(
         self,
         result_q: queue.SimpleQueue[dict[str, Any]],
+        run_rows: list[dict[str, Any]] | None = None,
+        world_size: int = 0,
     ) -> bool:
         ok = True
         while True:
@@ -574,6 +640,16 @@ class Leader:
                     f"loss={float(item['loss']):.4f}, "
                     f"batches={int(item['batches'])}, device={item['device']}"
                 )
+                if run_rows is not None:
+                    run_rows.append(
+                        {
+                            "epoch": int(item["epoch"]),
+                            "world_size": world_size,
+                            "loss": float(item["loss"]),
+                            "batches": int(item["batches"]),
+                            "duration_seconds": float(item.get("duration_seconds") or 0.0),
+                        }
+                    )
             elif item.get("type") == "distributed_error":
                 ok = False
                 print(
@@ -940,6 +1016,159 @@ class Leader:
         print("  ".join("-" * width for width in widths))
         for row in rows:
             print("  ".join(text.ljust(width) for text, width in zip(row, widths)))
+
+    def print_help(self) -> None:
+        print("[leader] commands:")
+        print("  workers          show connected workers")
+        print(f"  start            start training with default epochs ({self.epochs})")
+        print("  start 5          start training for 5 epochs")
+        print("  help             show this command list")
+        print("  quit             stop the leader cleanly")
+        print("[leader] select training mode at startup with --mode federated|distributed")
+
+    def _print_and_save_federated_summary(
+        self,
+        run_id: str,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        headers = ["epoch", "workers", "samples", "train_loss", "val_loss", "val_acc", "duration"]
+        table_rows = [
+            [
+                str(row["epoch"]),
+                str(row["workers"]),
+                str(row["samples"]),
+                f"{float(row['train_loss']):.4f}",
+                f"{float(row['val_loss']):.4f}",
+                f"{float(row['val_acc']) * 100:.2f}%",
+                f"{float(row['duration_seconds']):.1f}s",
+            ]
+            for row in rows
+        ]
+        graph_lines = []
+        graph_lines.extend(
+            _metric_bars(
+                "train_loss",
+                [
+                    (int(row["epoch"]), float(row["train_loss"]), f"{float(row['train_loss']):.4f}")
+                    for row in rows
+                ],
+            )
+        )
+        graph_lines.extend(
+            _metric_bars(
+                "val_acc",
+                [
+                    (
+                        int(row["epoch"]),
+                        float(row["val_acc"]),
+                        f"{float(row['val_acc']) * 100:.2f}%",
+                    )
+                    for row in rows
+                ],
+                scale_max=1.0,
+            )
+        )
+        csv_rows = [
+            {
+                "epoch": row["epoch"],
+                "workers": row["workers"],
+                "samples": row["samples"],
+                "train_loss": f"{float(row['train_loss']):.6f}",
+                "val_loss": f"{float(row['val_loss']):.6f}",
+                "val_acc": f"{float(row['val_acc']):.6f}",
+                "duration_seconds": f"{float(row['duration_seconds']):.3f}",
+            }
+            for row in rows
+        ]
+        self._print_and_save_run_summary(
+            mode="federated",
+            run_id=run_id,
+            headers=headers,
+            table_rows=table_rows,
+            graph_lines=graph_lines,
+            csv_rows=csv_rows,
+        )
+
+    def _print_and_save_distributed_summary(
+        self,
+        run_id: str,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        headers = ["epoch", "world", "batches", "loss", "duration"]
+        table_rows = [
+            [
+                str(row["epoch"]),
+                str(row["world_size"]),
+                str(row["batches"]),
+                f"{float(row['loss']):.4f}",
+                f"{float(row['duration_seconds']):.1f}s",
+            ]
+            for row in rows
+        ]
+        graph_lines = _metric_bars(
+            "loss",
+            [(int(row["epoch"]), float(row["loss"]), f"{float(row['loss']):.4f}") for row in rows],
+        )
+        csv_rows = [
+            {
+                "epoch": row["epoch"],
+                "world_size": row["world_size"],
+                "batches": row["batches"],
+                "loss": f"{float(row['loss']):.6f}",
+                "duration_seconds": f"{float(row['duration_seconds']):.3f}",
+            }
+            for row in rows
+        ]
+        self._print_and_save_run_summary(
+            mode="distributed",
+            run_id=run_id,
+            headers=headers,
+            table_rows=table_rows,
+            graph_lines=graph_lines,
+            csv_rows=csv_rows,
+        )
+
+    def _print_and_save_run_summary(
+        self,
+        mode: str,
+        run_id: str,
+        headers: list[str],
+        table_rows: list[list[str]],
+        graph_lines: list[str],
+        csv_rows: list[dict[str, Any]],
+    ) -> None:
+        table_lines = _format_table(headers, table_rows)
+        print("[leader] run summary")
+        for line in table_lines:
+            print(line)
+        if graph_lines:
+            print("[leader] run graph")
+            for line in graph_lines:
+                print(line)
+
+        runs_dir = self.project_dir / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        base = f"{mode}-{timestamp}-{run_id}"
+        csv_path = runs_dir / f"{base}.csv"
+        txt_path = runs_dir / f"{base}.txt"
+
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(csv_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+        with txt_path.open("w", encoding="utf-8") as handle:
+            handle.write(f"{mode} run {run_id}\n")
+            handle.write("\n".join(table_lines))
+            handle.write("\n")
+            if graph_lines:
+                handle.write("\n")
+                handle.write("\n".join(graph_lines))
+                handle.write("\n")
+
+        print(f"[leader] saved run summary: {csv_path}")
+        print(f"[leader] saved run report: {txt_path}")
 
 
 async def _close_writer(

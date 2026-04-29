@@ -447,6 +447,19 @@ Latest worker bootstrap change
   default to avoid keeping large pip download caches outside the virtual
   environment.
 
+Latest leader usability/reporting change
+- dml_cluster/leader.py now prints explicit leader commands at startup and from
+  help, including start 5 for setting the epoch count interactively.
+- The start command now rejects invalid epoch input instead of silently falling
+  back to the default.
+- Federated runs collect per-epoch workers, samples, train_loss, val_loss,
+  val_acc, and duration_seconds.
+- Distributed runs collect per-epoch world_size, batches, all-reduced loss, and
+  duration_seconds from rank 0.
+- At the end of a run, the leader prints a summary table and ASCII metric graph.
+- It also saves CSV and TXT reports under runs/. The runs/ directory is ignored
+  by git.
+
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
 2. Add distributed CIFAR validation accuracy if needed for stronger reporting.

@@ -33,6 +33,7 @@ Leader commands:
 - `workers` shows connected workers.
 - `start` starts training with the configured default epoch count.
 - `start 2` starts training for 2 epochs.
+- `help` shows the available leader commands.
 - `quit` stops the leader cleanly.
 
 By default there is no worker cap. For a course demo of rejection behavior, run:
@@ -51,7 +52,7 @@ Useful training knobs:
   --eval-batches 40
 ```
 
-At each epoch boundary the leader snapshots currently connected workers, allocates MNIST batches proportional to their reported benchmark score, sends the current model to each worker, FedAvg-aggregates successful worker models, and logs train/validation loss.
+At each epoch boundary the leader snapshots currently connected workers, allocates MNIST batches proportional to their reported benchmark score, sends the current model to each worker, FedAvg-aggregates successful worker models, and logs train/validation loss. At the end of a run, the leader prints a summary table, a terminal metric graph, and saves CSV/TXT reports under `runs/`.
 
 ## Advanced Distributed Mode
 
