@@ -28,6 +28,10 @@ The leader binds to the Tailscale IPv4 address when `tailscale ip -4` works; oth
 ./leader_macos.sh --host 0.0.0.0 --port 8787
 ```
 
+`leader_macos.sh` checks the requested control port before startup. If an older
+project leader is still listening on that port, it stops that stale process
+before starting the new leader.
+
 Leader commands:
 
 - `workers` shows connected workers.
