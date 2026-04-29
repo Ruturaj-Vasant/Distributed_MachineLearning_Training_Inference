@@ -51,6 +51,17 @@ function Test-PythonSpec {
     }
 }
 
+function Invoke-Checked {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
+    }
+}
+
 function Ensure-Winget {
     if (Get-CommandPath "winget.exe") {
         Write-Step "winget already present"
@@ -118,6 +129,9 @@ function Invoke-Python311 {
     }
     $args = @($PythonSpec.LauncherArgs) + $Arguments
     & $PythonSpec.Executable @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python 3.11 command failed with exit code ${LASTEXITCODE}: $($PythonSpec.Executable) $($args -join ' ')"
+    }
 }
 
 function Ensure-Python311 {
@@ -240,10 +254,11 @@ function Ensure-Venv {
     }
 
     Write-Step "Installing project package into virtual environment"
-    & $venvPython -m pip install --upgrade pip
-    & $venvPython -m pip install -r (Join-Path $ProjectDir "requirements.txt")
+    Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip")
+    Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "-r", (Join-Path $ProjectDir "requirements.txt"))
     Ensure-Torch $venvPython
-    & $venvPython -m pip install -e $ProjectDir
+    Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "-e", $ProjectDir)
+    Invoke-Checked -FilePath $venvPython -Arguments @("-c", "import dml_cluster.hardware, dml_cluster.worker")
     return $venvPython
 }
 
@@ -261,7 +276,7 @@ function Ensure-Torch {
     }
 
     Write-Step "Installing PyTorch build selected for this machine"
-    & $VenvPython -m dml_cluster.torch_install --install
+    Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "dml_cluster.torch_install", "--install")
 }
 
 function Main {
@@ -275,7 +290,7 @@ function Main {
     $venvPython = Ensure-Venv $python
 
     Write-Step "Detected hardware:"
-    & $venvPython -m dml_cluster.hardware
+    Invoke-Checked -FilePath $venvPython -Arguments @("-m", "dml_cluster.hardware")
     Write-Step "Starting worker inside virtual environment"
     & $venvPython -m dml_cluster.worker --leader $LeaderHost --port $LeaderPort --project-dir $ProjectDir
 }
