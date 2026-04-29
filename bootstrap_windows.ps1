@@ -83,9 +83,10 @@ function Invoke-Checked {
         throw "Executable not found: $FilePath"
     }
 
-    $output = & "$FilePath" @Arguments 2>&1
+    & "$FilePath" @Arguments
+
     if ($LASTEXITCODE -ne 0) {
-        throw ($output | Out-String)
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
     }
 }
 
@@ -105,9 +106,9 @@ function Invoke-Python311 {
     }
 
     $args = @($PythonSpec.LauncherArgs) + $Arguments
-    $output = & "$exe" @args 2>&1
+    & "$exe" @args
     if ($LASTEXITCODE -ne 0) {
-        throw ($output | Out-String)
+        throw "Python 3.11 command failed with exit code ${LASTEXITCODE}: $exe $($args -join ' ')"
     }
 }
 
