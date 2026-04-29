@@ -24,6 +24,32 @@ function Get-CommandPath {
     return $null
 }
 
+function New-PythonSpec {
+    param(
+        [string]$Executable,
+        [string[]]$LauncherArgs = @()
+    )
+    return [pscustomobject]@{
+        Executable = $Executable
+        LauncherArgs = $LauncherArgs
+    }
+}
+
+function Test-PythonSpec {
+    param([object]$PythonSpec)
+    if (-not $PythonSpec -or -not (Test-Path $PythonSpec.Executable)) {
+        return $false
+    }
+
+    try {
+        $args = @($PythonSpec.LauncherArgs) + @("-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        $version = (& $PythonSpec.Executable @args 2>$null | Select-Object -First 1)
+        return ($LASTEXITCODE -eq 0 -and $version -eq "3.11")
+    } catch {
+        return $false
+    }
+}
+
 function Ensure-Winget {
     if (Get-CommandPath "winget.exe") {
         Write-Step "winget already present"
@@ -57,6 +83,12 @@ function Ensure-WingetCommand {
 }
 
 function Find-Python311 {
+    $py = Get-CommandPath "py.exe"
+    if ($py) {
+        $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
+        if (Test-PythonSpec $spec) { return $spec }
+    }
+
     $candidates = @(
         (Get-CommandPath "python3.11.exe"),
         (Get-CommandPath "python.exe"),
@@ -65,20 +97,11 @@ function Find-Python311 {
     ) | Where-Object { $_ -and (Test-Path $_) }
 
     foreach ($candidate in $candidates) {
-        try {
-            $version = & $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-            if ($version -eq "3.11") { return $candidate }
-        } catch {
+        if ($candidate -like "*\Microsoft\WindowsApps\*") {
+            continue
         }
-    }
-
-    $py = Get-CommandPath "py.exe"
-    if ($py) {
-        try {
-            & $py -3.11 -c "import sys" 2>$null
-            if ($LASTEXITCODE -eq 0) { return "$py -3.11" }
-        } catch {
-        }
+        $spec = New-PythonSpec -Executable $candidate
+        if (Test-PythonSpec $spec) { return $spec }
     }
 
     return $null
@@ -86,21 +109,21 @@ function Find-Python311 {
 
 function Invoke-Python311 {
     param(
-        [string]$PythonSpec,
+        [object]$PythonSpec,
         [string[]]$Arguments
     )
-    if ($PythonSpec.EndsWith(" -3.11")) {
-        $exe = $PythonSpec.Substring(0, $PythonSpec.Length - 6)
-        & $exe -3.11 @Arguments
-    } else {
-        & $PythonSpec @Arguments
+    if (-not (Test-PythonSpec $PythonSpec)) {
+        throw "Python 3.11 was found but could not be executed. Close PowerShell, open a new PowerShell, and re-run this script."
     }
+    $args = @($PythonSpec.LauncherArgs) + $Arguments
+    & $PythonSpec.Executable @args
 }
 
 function Ensure-Python311 {
     $python = Find-Python311
     if ($python) {
-        Write-Step "Python 3.11 already present"
+        $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
+        Write-Step "Python 3.11 already present: $display"
         return $python
     }
 
@@ -206,7 +229,7 @@ function Write-GpuStatus {
 }
 
 function Ensure-Venv {
-    param([string]$PythonSpec)
+    param([object]$PythonSpec)
     $venvPython = Join-Path $VenvDir "Scripts\python.exe"
     if (-not (Test-Path $venvPython)) {
         Write-Step "Creating virtual environment at $VenvDir"

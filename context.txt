@@ -428,6 +428,16 @@ Known caveats and future work
 - GitHub CLI was installed locally but not authenticated when Pages settings
   were checked. Pages was later enabled externally and verified live.
 
+Latest worker bootstrap change
+- bootstrap_windows.ps1 now resolves Python 3.11 more defensively for worker
+  installs.
+- It prefers the Windows py launcher with -3.11, skips broken Microsoft
+  WindowsApps python.exe aliases, and stores executable path plus launcher
+  arguments separately instead of returning a single command string.
+- This was added after a Windows worker failed at virtual environment creation
+  with PowerShell trying to execute an invalid python.exe path at
+  Invoke-Python311.
+
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
 2. Add distributed CIFAR validation accuracy if needed for stronger reporting.
