@@ -61,7 +61,9 @@ function Invoke-Checked {
         throw "Executable not found: $FilePath"
     }
 
-    & "$FilePath" @Arguments
+    # KEY FIX: suppress stdout so it doesn't corrupt variables
+    $null = & "$FilePath" @Arguments 2>&1
+
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
     }
@@ -177,7 +179,7 @@ function Invoke-Python311 {
         throw "Python 3.11 was found but could not be executed. Close PowerShell, open a new PowerShell, and re-run this script."
     }
     $args = @($PythonSpec.LauncherArgs) + $Arguments
-    & $PythonSpec.Executable @args
+    $null = & $PythonSpec.Executable @args 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Python 3.11 command failed with exit code ${LASTEXITCODE}: $($PythonSpec.Executable) $($args -join ' ')"
     }
