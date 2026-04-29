@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Join the Distributed ML Worker Network</title>
+    <title>Distributed ML Cluster Commands</title>
     <style>
       :root {
         color-scheme: light;
@@ -118,12 +118,29 @@
         gap: 18px;
       }
 
+      .section-title {
+        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .leader-command {
+        margin-bottom: 26px;
+      }
+
       .panel {
         min-width: 0;
         border: 1px solid var(--line);
         border-radius: 8px;
         background: var(--panel);
         overflow: hidden;
+      }
+
+      .panel.wide {
+        width: 100%;
       }
 
       .panel-head {
@@ -134,6 +151,15 @@
         padding: 18px 18px 14px;
         border-bottom: 1px solid var(--line);
         background: var(--panel-soft);
+      }
+
+      .panel-note {
+        margin: 0;
+        padding: 14px 18px 16px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+        border-top: 1px solid var(--line);
       }
 
       h2 {
@@ -163,6 +189,15 @@
         font-size: 12.5px;
         line-height: 1.75;
         white-space: pre;
+      }
+
+      .panel.compact pre {
+        min-height: 220px;
+      }
+
+      .commands .section-title {
+        grid-column: 1 / -1;
+        margin-bottom: -6px;
       }
 
       code {
@@ -231,23 +266,47 @@
           <div class="mark" aria-hidden="true"></div>
           <div>
             <span class="brand-name">Distributed ML Training</span>
-            <span class="brand-meta">Worker network bootstrap</span>
+            <span class="brand-meta">Leader and worker commands</span>
           </div>
         </div>
         <a class="repo" href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">GitHub repository</a>
       </header>
 
       <section class="hero" aria-labelledby="page-title">
-        <h1 id="page-title">Join a worker node.</h1>
+        <h1 id="page-title">Run the cluster.</h1>
         <p class="lede">
-          Run the command block for your operating system. It stages the latest
-          project code in a temporary folder, keeps the reusable worker
-          environment, authenticates Tailscale when needed, and starts the worker
-          process.
+          Start the leader on the Mac first, then run the command block for each
+          worker operating system. Worker setup stages downloads in a temporary
+          folder and keeps the reusable runtime environment for future runs.
         </p>
       </section>
 
+      <section class="leader-command" aria-label="Leader command">
+        <h2 class="section-title">Leader</h2>
+        <article class="panel wide compact">
+          <div class="panel-head">
+            <h2>Leader Mac</h2>
+            <span class="shell">Terminal</span>
+          </div>
+          <pre><code>cd /Users/ruturaj_vasant/Desktop/Academic/DS_Project
+source .venv/bin/activate
+
+dml-leader \
+  --host 0.0.0.0 \
+  --port 8787 \
+  --project-dir "$PWD" \
+  --mode distributed \
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
+  --dist-port 29501</code></pre>
+          <p class="panel-note">
+            In the leader terminal, use <code>workers</code> to see joined
+            workers and <code>start 5</code> to run 5 epochs.
+          </p>
+        </article>
+      </section>
+
       <section class="commands" aria-label="Worker setup commands">
+        <h2 class="section-title">Workers</h2>
         <article class="panel">
           <div class="panel-head">
             <h2>macOS</h2>

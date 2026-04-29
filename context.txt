@@ -459,6 +459,10 @@ Latest leader usability/reporting change
 - At the end of a run, the leader prints a summary table and ASCII metric graph.
 - It also saves CSV and TXT reports under runs/. The runs/ directory is ignored
   by git.
+- docs/index.html now includes a Leader Mac command block above the worker
+  setup commands. It shows the distributed-mode dml-leader startup command with
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net and notes that the
+  leader terminal accepts workers and start 5.
 
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
