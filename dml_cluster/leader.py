@@ -49,6 +49,15 @@ class Assignment:
     num_batches: int
 
 
+@dataclass(frozen=True)
+class FederatedRunConfig:
+    epochs: int
+    train_batches_per_epoch: int
+    batch_size: int
+    lr: float
+    eval_batches: int
+
+
 def _format_table(headers: list[str], rows: list[list[str]]) -> list[str]:
     widths = [len(header) for header in headers]
     for row in rows:
@@ -296,15 +305,12 @@ class Leader:
             if command in {"workers", "w"}:
                 self.print_workers()
             elif command == "start":
-                if len(command_parts) > 2:
-                    print("[leader] usage: start [positive_epoch_count]")
-                    continue
                 try:
-                    epochs = self._parse_start_epochs(command_parts[1:])
+                    config = self._parse_start_config(command_parts[1:])
                 except ValueError as exc:
                     print(f"[leader] {exc}")
                     continue
-                await self._start_training(epochs)
+                await self._start_training(config)
             elif command in {"help", "h", "?"}:
                 self.print_help()
             elif command in {"quit", "exit"}:
@@ -314,18 +320,91 @@ class Leader:
             elif command:
                 print(f"[leader] unknown command: {command}")
 
-    def _parse_start_epochs(self, parts: list[str]) -> int:
-        if not parts:
-            return self.epochs
-        try:
-            epochs = int(parts[0])
-        except ValueError as exc:
-            raise ValueError("epoch count must be a positive integer, for example: start 5") from exc
-        if epochs <= 0:
-            raise ValueError("epoch count must be greater than zero")
-        return epochs
+    def _parse_start_config(self, parts: list[str]) -> FederatedRunConfig:
+        config = FederatedRunConfig(
+            epochs=self.epochs,
+            train_batches_per_epoch=self.train_batches_per_epoch,
+            batch_size=self.batch_size,
+            lr=self.lr,
+            eval_batches=self.eval_batches,
+        )
+        seen_positional_epoch = False
+        values = {
+            "epochs": config.epochs,
+            "train_batches_per_epoch": config.train_batches_per_epoch,
+            "batch_size": config.batch_size,
+            "lr": config.lr,
+            "eval_batches": config.eval_batches,
+        }
+        aliases = {
+            "epoch": "epochs",
+            "epochs": "epochs",
+            "batches": "train_batches_per_epoch",
+            "train_batches": "train_batches_per_epoch",
+            "train_batches_per_epoch": "train_batches_per_epoch",
+            "batch": "batch_size",
+            "batch_size": "batch_size",
+            "lr": "lr",
+            "learning_rate": "lr",
+            "eval": "eval_batches",
+            "eval_batches": "eval_batches",
+        }
 
-    async def _start_training(self, epochs: int) -> None:
+        for part in parts:
+            if "=" not in part:
+                if seen_positional_epoch:
+                    raise ValueError("usage: start [epochs] [batches=100] [lr=0.03]")
+                values["epochs"] = self._parse_positive_int(part, "epoch count")
+                seen_positional_epoch = True
+                continue
+
+            raw_key, raw_value = part.split("=", 1)
+            key = aliases.get(raw_key.strip().lower())
+            if key is None:
+                allowed = "epochs, batches, batch_size, lr, eval_batches"
+                raise ValueError(f"unknown start option '{raw_key}'. Allowed options: {allowed}")
+            if not raw_value.strip():
+                raise ValueError(f"{raw_key} needs a value")
+
+            if key == "lr":
+                values[key] = self._parse_positive_float(raw_value, "learning rate")
+            else:
+                name = raw_key.replace("_", " ")
+                allow_zero = key == "eval_batches"
+                values[key] = self._parse_int(raw_value, name, minimum=0 if allow_zero else 1)
+
+        return FederatedRunConfig(
+            epochs=int(values["epochs"]),
+            train_batches_per_epoch=int(values["train_batches_per_epoch"]),
+            batch_size=int(values["batch_size"]),
+            lr=float(values["lr"]),
+            eval_batches=int(values["eval_batches"]),
+        )
+
+    def _parse_positive_int(self, value: str, name: str) -> int:
+        return self._parse_int(value, name, minimum=1)
+
+    def _parse_int(self, value: str, name: str, minimum: int) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+        if parsed < minimum:
+            if minimum == 1:
+                raise ValueError(f"{name} must be greater than zero")
+            raise ValueError(f"{name} must be at least {minimum}")
+        return parsed
+
+    def _parse_positive_float(self, value: str, name: str) -> float:
+        try:
+            parsed = float(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a number") from exc
+        if parsed <= 0:
+            raise ValueError(f"{name} must be greater than zero")
+        return parsed
+
+    async def _start_training(self, config: FederatedRunConfig) -> None:
         if self._training_task is not None and not self._training_task.done():
             print("[leader] training is already running")
             return
@@ -334,19 +413,28 @@ class Leader:
         if worker_count == 0 and self.training_mode == "federated":
             print("[leader] no workers connected; training not started")
             return
+        if self.training_mode == "distributed" and (
+            config.train_batches_per_epoch != self.train_batches_per_epoch
+            or config.batch_size != self.batch_size
+            or config.lr != self.lr
+            or config.eval_batches != self.eval_batches
+        ):
+            print("[leader] batches, batch_size, lr, and eval_batches are federated-only start options")
+            print("[leader] restart with --mode federated to use those options")
+            return
         if worker_count == 0:
             print("[leader] no workers connected; running distributed leader-only smoke path")
         target = (
-            self._run_distributed_training(epochs)
+            self._run_distributed_training(config.epochs)
             if self.training_mode == "distributed"
-            else self._run_federated_training(epochs)
+            else self._run_federated_training(config)
         )
         self._training_task = asyncio.create_task(
             target,
             name="training-run",
         )
 
-    async def _run_federated_training(self, epochs: int) -> None:
+    async def _run_federated_training(self, config: FederatedRunConfig) -> None:
         from .training import average_state_payloads, evaluate_payload, initial_model_payload
 
         run_id = uuid.uuid4().hex[:12]
@@ -354,11 +442,11 @@ class Leader:
         run_rows: list[dict[str, Any]] = []
         print(
             f"[leader] training run {run_id} started: "
-            f"epochs={epochs}, batches/epoch={self.train_batches_per_epoch}, "
-            f"batch_size={self.batch_size}"
+            f"epochs={config.epochs}, batches/epoch={config.train_batches_per_epoch}, "
+            f"batch_size={config.batch_size}, lr={config.lr}"
         )
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(1, config.epochs + 1):
             epoch_started = time.monotonic()
             async with self._lock:
                 workers = list(self.workers.values())
@@ -367,9 +455,9 @@ class Leader:
                 print(f"[leader] epoch {epoch}: no workers connected; stopping training")
                 break
 
-            assignments = self._allocate_batches(workers, self.train_batches_per_epoch, run_id, epoch)
+            assignments = self._allocate_batches(workers, config.train_batches_per_epoch, run_id, epoch)
             self._print_allocation(epoch, assignments)
-            results = await self._run_epoch(run_id, epoch, model_state, assignments)
+            results = await self._run_epoch(run_id, epoch, model_state, assignments, config)
             if not results:
                 print(f"[leader] epoch {epoch}: no successful worker results; stopping training")
                 break
@@ -383,11 +471,11 @@ class Leader:
                 evaluate_payload,
                 model_state,
                 self.project_dir,
-                self.batch_size,
-                self.eval_batches,
+                config.batch_size,
+                config.eval_batches,
             )
             print(
-                f"[leader] epoch {epoch}/{epochs} "
+                f"[leader] epoch {epoch}/{config.epochs} "
                 f"train_loss={train_loss:.4f} "
                 f"val_loss={float(metrics['loss']):.4f} "
                 f"val_acc={float(metrics['accuracy']) * 100:.2f}% "
@@ -407,7 +495,7 @@ class Leader:
 
         if run_rows:
             self._print_and_save_federated_summary(run_id, run_rows)
-        status = "complete" if len(run_rows) == epochs else "ended"
+        status = "complete" if len(run_rows) == config.epochs else "ended"
         print(f"[leader] training run {run_id} {status}")
 
     async def _run_distributed_training(self, epochs: int) -> None:
@@ -752,6 +840,7 @@ class Leader:
         epoch: int,
         model_state: str,
         assignments: list[Assignment],
+        config: FederatedRunConfig,
     ) -> list[dict[str, Any]]:
         results, lost_assignments = await self._send_and_collect(
             run_id=run_id,
@@ -759,6 +848,7 @@ class Leader:
             model_state=model_state,
             assignments=assignments,
             phase="initial",
+            config=config,
         )
         if lost_assignments:
             async with self._lock:
@@ -776,6 +866,7 @@ class Leader:
                     model_state=model_state,
                     assignments=recovery,
                     phase="recovery",
+                    config=config,
                 )
                 results.extend(recovery_results)
             else:
@@ -789,6 +880,7 @@ class Leader:
         model_state: str,
         assignments: list[Assignment],
         phase: str,
+        config: FederatedRunConfig,
     ) -> tuple[list[dict[str, Any]], list[Assignment]]:
         queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         pending: dict[str, Assignment] = {}
@@ -820,8 +912,8 @@ class Leader:
                         "model_state": model_state,
                         "start_batch": assignment.start_batch,
                         "num_batches": assignment.num_batches,
-                        "batch_size": self.batch_size,
-                        "lr": self.lr,
+                        "batch_size": config.batch_size,
+                        "lr": config.lr,
                     },
                 )
             except Exception as exc:
@@ -1022,6 +1114,8 @@ class Leader:
         print("  workers          show connected workers")
         print(f"  start            start training with default epochs ({self.epochs})")
         print("  start 5          start training for 5 epochs")
+        print("  start epochs=5 batches=100 lr=0.03")
+        print("                   federated: override epochs, batches, lr for one run")
         print("  help             show this command list")
         print("  quit             stop the leader cleanly")
         print("[leader] select training mode at startup with --mode federated|distributed")

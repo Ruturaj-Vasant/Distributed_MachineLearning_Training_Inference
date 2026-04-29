@@ -37,6 +37,8 @@ Leader commands:
 - `workers` shows connected workers.
 - `start` starts training with the configured default epoch count.
 - `start 2` starts training for 2 epochs.
+- `start epochs=5 batches=100 lr=0.03` starts a federated run with per-run
+  epoch, batch-count, and learning-rate overrides.
 - `help` shows the available leader commands.
 - `quit` stops the leader cleanly.
 
