@@ -437,6 +437,15 @@ Latest worker bootstrap change
 - This was added after a Windows worker failed at virtual environment creation
   with PowerShell trying to execute an invalid python.exe path at
   Invoke-Python311.
+- Worker setup commands on docs/index.html now download and extract the GitHub
+  zip into a temporary staging directory, sync the repo into the persistent
+  worker runtime directory, and delete the staging directory when the command
+  exits.
+- The persistent runtime keeps .venv, .data, and .dml_worker_id so reruns do not
+  reinstall everything or create a new worker identity.
+- bootstrap_macos.sh and bootstrap_windows.ps1 set PIP_NO_CACHE_DIR=1 by
+  default to avoid keeping large pip download caches outside the virtual
+  environment.
 
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.

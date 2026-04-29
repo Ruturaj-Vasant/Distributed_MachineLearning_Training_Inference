@@ -5,6 +5,7 @@ $LeaderHost = if ($env:LEADER_HOST) { $env:LEADER_HOST } else { "leader-macbook-
 $LeaderPort = if ($env:LEADER_PORT) { [int]$env:LEADER_PORT } else { 8787 }
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $ProjectDir ".venv"
+if (-not $env:PIP_NO_CACHE_DIR) { $env:PIP_NO_CACHE_DIR = "1" }
 
 function Write-Step {
     param([string]$Message)

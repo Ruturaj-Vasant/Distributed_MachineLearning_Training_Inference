@@ -5,6 +5,7 @@ LEADER_HOST="${LEADER_HOST:-leader-macbook-pro.taila5426e.ts.net}"
 LEADER_PORT="${LEADER_PORT:-8787}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
+export PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 
 log() {
   printf '[bootstrap:macos] %s\n' "$*"

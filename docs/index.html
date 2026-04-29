@@ -240,9 +240,10 @@
       <section class="hero" aria-labelledby="page-title">
         <h1 id="page-title">Join a worker node.</h1>
         <p class="lede">
-          Run the command block for your operating system. It downloads the latest
-          project code, installs the required local dependencies, authenticates
-          Tailscale when needed, and starts the worker process.
+          Run the command block for your operating system. It stages the latest
+          project code in a temporary folder, keeps the reusable worker
+          environment, authenticates Tailscale when needed, and starts the worker
+          process.
         </p>
       </section>
 
@@ -252,11 +253,17 @@
             <h2>macOS</h2>
             <span class="shell">Terminal</span>
           </div>
-          <pre><code>mkdir -p "$HOME/dml-worker" &amp;&amp; \
-cd "$HOME/dml-worker" &amp;&amp; \
-curl -L "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -o worker.zip &amp;&amp; \
-unzip -q -o worker.zip &amp;&amp; \
-cd Distributed_MachineLearning_Training_Inference-main &amp;&amp; \
+          <pre><code>set -e
+work="$HOME/dml-worker"
+runtime="$work/Distributed_MachineLearning_Training_Inference-main"
+stage="$(mktemp -d)"
+cleanup() { [ -n "$stage" ] &amp;&amp; rm -rf "$stage"; }
+trap cleanup EXIT
+mkdir -p "$runtime" &amp;&amp; \
+curl -L "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -o "$stage/worker.zip" &amp;&amp; \
+unzip -q -o "$stage/worker.zip" -d "$stage" &amp;&amp; \
+rsync -a --delete --exclude ".venv/" --exclude ".data/" --exclude ".dml_worker_id" "$stage/Distributed_MachineLearning_Training_Inference-main/" "$runtime/" &amp;&amp; \
+cd "$runtime" &amp;&amp; \
 chmod +x bootstrap_macos.sh &amp;&amp; \
 ./bootstrap_macos.sh</code></pre>
         </article>
@@ -267,12 +274,20 @@ chmod +x bootstrap_macos.sh &amp;&amp; \
             <span class="shell">PowerShell</span>
           </div>
           <pre><code>$work = Join-Path $HOME "dml-worker"
-New-Item -ItemType Directory -Force $work | Out-Null
-Set-Location $work
-Invoke-WebRequest -Uri "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -OutFile "worker.zip"
-Expand-Archive -Path "worker.zip" -DestinationPath "." -Force
-Set-Location ".\Distributed_MachineLearning_Training_Inference-main"
-powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1</code></pre>
+$runtime = Join-Path $work "Distributed_MachineLearning_Training_Inference-main"
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("dml-worker-install-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $runtime, $stage | Out-Null
+try {
+  Invoke-WebRequest -Uri "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -OutFile (Join-Path $stage "worker.zip")
+  Expand-Archive -Path (Join-Path $stage "worker.zip") -DestinationPath $stage -Force
+  $source = Join-Path $stage "Distributed_MachineLearning_Training_Inference-main"
+  Get-ChildItem -Force $runtime | Where-Object { @(".venv", ".data", ".dml_worker_id") -notcontains $_.Name } | Remove-Item -Recurse -Force
+  Get-ChildItem -Force $source | Copy-Item -Destination $runtime -Recurse -Force
+  Set-Location $runtime
+  powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1
+} finally {
+  Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+}</code></pre>
         </article>
       </section>
 
