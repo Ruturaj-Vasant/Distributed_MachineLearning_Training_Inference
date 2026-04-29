@@ -56,7 +56,12 @@ function Invoke-Checked {
         [string]$FilePath,
         [string[]]$Arguments
     )
-    & $FilePath @Arguments
+
+    if (-not (Test-Path $FilePath)) {
+        throw "Executable not found: $FilePath"
+    }
+
+    & "$FilePath" @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
     }
@@ -314,7 +319,7 @@ function Ensure-Torch {
         return
     }
 
-    & $VenvPython -c "import torch, torchvision" 2>$null
+    & "$VenvPython" -c "import torch, torchvision" 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Step "PyTorch and torchvision already present"
         return
@@ -337,7 +342,7 @@ function Main {
     Write-Step "Detected hardware:"
     Invoke-Checked -FilePath $venvPython -Arguments @("-m", "dml_cluster.hardware")
     Write-Step "Starting worker inside virtual environment"
-    & $venvPython -m dml_cluster.worker --leader $LeaderHost --port $LeaderPort --project-dir $ProjectDir
+    & "$venvPython" -m dml_cluster.worker --leader $LeaderHost --port $LeaderPort --project-dir $ProjectDir
 }
 
 Main
