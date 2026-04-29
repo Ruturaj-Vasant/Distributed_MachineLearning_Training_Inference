@@ -108,7 +108,7 @@ The script installs/checks winget, curl, git, Python 3.11, Tailscale, and the se
 Workers connect to:
 
 ```text
-ruturajs-macbook-pro.taila5426e.ts.net:8787
+leader-macbook-pro.taila5426e.ts.net:8787
 ```
 
 Override when testing:

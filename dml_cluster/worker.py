@@ -17,7 +17,7 @@ from typing import Any
 from .hardware import detect_hardware
 from .protocol import PROTOCOL_LIMIT, ProtocolError, read_binary, read_message, send_message
 
-DEFAULT_LEADER_HOST = "ruturajs-macbook-pro.taila5426e.ts.net"
+DEFAULT_LEADER_HOST = "leader-macbook-pro.taila5426e.ts.net"
 DEFAULT_PORT = 8787
 DEFAULT_HEARTBEAT_INTERVAL = 5.0
 MAX_RECONNECT_DELAY = 60.0

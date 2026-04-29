@@ -29,7 +29,7 @@ Current repo state at this handoff
   so multi-epoch distributed runs keep one torch.distributed process group alive
   for the full run instead of creating/destroying one process group per epoch.
 - The default worker leader hostname is:
-  ruturajs-macbook-pro.taila5426e.ts.net
+  leader-macbook-pro.taila5426e.ts.net
 
 High-level project overview
 This is a Python 3.11 project named tailscale-dml. It is a Tailscale-connected
@@ -402,7 +402,7 @@ Comparison of methods
 
 Default leader and ports
 - Default worker target:
-  ruturajs-macbook-pro.taila5426e.ts.net:8787
+  leader-macbook-pro.taila5426e.ts.net:8787
 - Control channel default port: 8787.
 - Distributed process group default port: 29501.
 - Both ports must be reachable between leader and workers for distributed mode.
