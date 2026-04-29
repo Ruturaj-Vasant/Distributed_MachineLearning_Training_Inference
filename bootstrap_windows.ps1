@@ -41,20 +41,32 @@ function New-PythonSpec {
 
     return [pscustomobject]@{
         Executable   = $Executable
-        LauncherArgs = $LauncherArgs
+        LauncherArgs  = $LauncherArgs
     }
 }
 
 function Test-PythonSpec {
     param([object]$PythonSpec)
 
-    if (-not $PythonSpec -or -not (Test-Path $PythonSpec.Executable)) {
+    if (-not $PythonSpec) {
+        return $false
+    }
+
+    $exe = $PythonSpec.Executable
+
+    if (Test-Path $exe) {
+        $resolvedExe = $exe
+    } else {
+        $resolvedExe = Get-CommandPath $exe
+    }
+
+    if (-not $resolvedExe) {
         return $false
     }
 
     try {
         $args = @($PythonSpec.LauncherArgs) + @("-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        $version = (& "$($PythonSpec.Executable)" @args 2>&1 | Select-Object -First 1)
+        $version = (& "$resolvedExe" @args 2>&1 | Select-Object -First 1)
         return ($LASTEXITCODE -eq 0 -and $version -eq "3.11")
     } catch {
         return $false
@@ -87,8 +99,13 @@ function Invoke-Python311 {
         throw "Python 3.11 was found but could not be executed. Close PowerShell, open a new PowerShell, and re-run this script."
     }
 
+    $exe = $PythonSpec.Executable
+    if (-not (Test-Path $exe)) {
+        $exe = Get-CommandPath $exe
+    }
+
     $args = @($PythonSpec.LauncherArgs) + $Arguments
-    $output = & "$($PythonSpec.Executable)" @args 2>&1
+    $output = & "$exe" @args 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw ($output | Out-String)
     }
@@ -203,9 +220,17 @@ function Find-Python311 {
 }
 
 function Ensure-Python311 {
-    # 1) Best case: use the Python launcher that already exists
-    $py = Get-CommandPath "py.exe"
-    if ($py) {
+    # 1) Prefer the launcher, by name or by path
+    $pyCandidates = @(
+        "py",
+        "py.exe",
+        (Get-CommandPath "py"),
+        (Get-CommandPath "py.exe"),
+        "$env:SystemRoot\py.exe",
+        "$env:LocalAppData\Programs\Python\Launcher\py.exe"
+    ) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
+
+    foreach ($py in $pyCandidates) {
         $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
         if (Test-PythonSpec $spec) {
             Write-Step "Using Python via py launcher: $py -3.11"
@@ -213,7 +238,7 @@ function Ensure-Python311 {
         }
     }
 
-    # 2) If launcher is unavailable, try already-installed Python locations
+    # 2) Then try installed Python locations
     $python = Find-Python311
     if ($python) {
         $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
@@ -228,8 +253,7 @@ function Ensure-Python311 {
     Start-Sleep -Seconds 5
 
     # 4) Retry launcher first after install
-    $py = Get-CommandPath "py.exe"
-    if ($py) {
+    foreach ($py in $pyCandidates) {
         $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
         if (Test-PythonSpec $spec) {
             Write-Step "Using Python via py launcher after install: $py -3.11"
