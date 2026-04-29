@@ -184,25 +184,25 @@ function Invoke-Python311 {
 }
 
 function Ensure-Python311 {
-    $python = Find-Python311
-    if ($python) {
-        $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
-        Write-Step "Python 3.11 already present: $display"
-        return $python
+    $pythonPath = "$env:LocalAppData\Programs\Python\Python311\python.exe"
+
+    if (Test-Path $pythonPath) {
+        Write-Step "Using Python 3.11 from: $pythonPath"
+        return New-PythonSpec -Executable $pythonPath
     }
 
-    Write-Step "Installing Python 3.11 via winget"
-    winget install --id Python.Python.3.11 --exact --accept-source-agreements --accept-package-agreements
-    Refresh-Path
-    Start-Sleep -Seconds 2
-
-    $python = Find-Python311
-    if (-not $python) {
-        throw "Python 3.11 installation completed but python.exe was not found through PATH, registry, or common install folders. Open a new PowerShell and re-run this script. If it still fails, run: py -3.11 --version"
+    # fallback to py launcher
+    $py = Get-CommandPath "py.exe"
+    if ($py) {
+        $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
+        if (Test-PythonSpec $spec) {
+            Write-Step "Using Python via py launcher"
+            return $spec
+        }
     }
-    return $python
+
+    throw "Python 3.11 not found, but it SHOULD be. Something is very wrong."
 }
-
 function Find-Tailscale {
     $cmd = Get-CommandPath "tailscale.exe"
     if ($cmd) { return $cmd }
