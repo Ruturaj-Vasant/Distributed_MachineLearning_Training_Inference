@@ -27,20 +27,10 @@ function Refresh-Path {
 function Get-CommandPath {
     param([string]$Name)
 
-    $cmd = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $cmd) {
-        return $null
-    }
-
-    if ($cmd.Path) {
-        return $cmd.Path
-    }
-
-    if ($cmd.Source) {
-        return $cmd.Source
-    }
-
-    return $cmd.Definition
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and $cmd.Source) { return $cmd.Source }
+    if ($cmd -and $cmd.Path) { return $cmd.Path }
+    return $null
 }
 
 function New-PythonSpec {
@@ -50,8 +40,8 @@ function New-PythonSpec {
     )
 
     return [pscustomobject]@{
-        Executable    = $Executable
-        LauncherArgs  = $LauncherArgs
+        Executable   = $Executable
+        LauncherArgs = $LauncherArgs
     }
 }
 
@@ -213,6 +203,17 @@ function Find-Python311 {
 }
 
 function Ensure-Python311 {
+    # 1) Best case: use the Python launcher that already exists
+    $py = Get-CommandPath "py.exe"
+    if ($py) {
+        $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
+        if (Test-PythonSpec $spec) {
+            Write-Step "Using Python via py launcher: $py -3.11"
+            return $spec
+        }
+    }
+
+    # 2) If launcher is unavailable, try already-installed Python locations
     $python = Find-Python311
     if ($python) {
         $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
@@ -220,19 +221,31 @@ function Ensure-Python311 {
         return $python
     }
 
+    # 3) Only now install Python
     Write-Step "Installing Python 3.11 via winget"
     winget install --id Python.Python.3.11 --exact --accept-source-agreements --accept-package-agreements
     Refresh-Path
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 5
 
-    $python = Find-Python311
-    if (-not $python) {
-        throw "Python 3.11 installation completed but python.exe was not found through PATH, registry, or common install folders. Open a new PowerShell and re-run this script. If it still fails, run: py -3.11 --version"
+    # 4) Retry launcher first after install
+    $py = Get-CommandPath "py.exe"
+    if ($py) {
+        $spec = New-PythonSpec -Executable $py -LauncherArgs @("-3.11")
+        if (Test-PythonSpec $spec) {
+            Write-Step "Using Python via py launcher after install: $py -3.11"
+            return $spec
+        }
     }
 
-    $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
-    Write-Step "Using Python 3.11 from: $display"
-    return $python
+    # 5) Retry other discovery paths
+    $python = Find-Python311
+    if ($python) {
+        $display = "$($python.Executable) $($python.LauncherArgs -join ' ')".Trim()
+        Write-Step "Using Python 3.11 from: $display"
+        return $python
+    }
+
+    throw "Python 3.11 installation completed but python.exe was not found. Open a new PowerShell and run: py -3.11 --version"
 }
 
 function Find-Tailscale {
