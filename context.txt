@@ -1,0 +1,500 @@
+Project handoff context for future chats
+Last updated: 2026-04-29
+
+Instruction for future Codex sessions
+Keep this file updated whenever meaningful project changes are made. Treat this
+as the source-of-truth handoff file for project state, commands, architecture,
+tests, known issues, and decisions. The old PROJECT_CONTEXT.md file was replaced
+by this file.
+
+Project location
+/Users/ruturaj_vasant/Desktop/Academic/DS_Project
+
+GitHub repository
+git@github.com:Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference.git
+https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference
+
+GitHub Pages worker join page
+https://ruturaj-vasant.github.io/Distributed_MachineLearning_Training_Inference/
+
+Git history currently known
+- c9df45a Initial project commit
+- 35cc0f8 Add worker download GitHub Pages site
+- 295c4b2 Simplify worker join page
+
+Current repo state at this handoff
+- Branch: main tracking origin/main.
+- PROJECT_CONTEXT.md has been replaced by context.txt.
+- The distributed mode stability fix changes dml_cluster/distributed_training.py
+  so multi-epoch distributed runs keep one torch.distributed process group alive
+  for the full run instead of creating/destroying one process group per epoch.
+- The default worker leader hostname is:
+  leader-macbook-pro.taila5426e.ts.net
+
+High-level project overview
+This is a Python 3.11 project named tailscale-dml. It is a Tailscale-connected
+distributed machine learning demo with a leader process and worker processes.
+Workers connect to the leader over an asyncio JSON-lines control protocol, send
+heartbeats, report hardware, receive training tasks/shards, and run ML training.
+
+The project supports two training modes:
+
+1. federated
+   - MNIST.
+   - Leader assigns contiguous mini-batch ranges to workers.
+   - Workers train a small MLP locally.
+   - Workers return model weights.
+   - Leader aggregates successful worker models with weighted FedAvg by sample
+     count.
+   - This mode naturally tolerates workers joining/leaving between rounds.
+
+2. distributed
+   - CIFAR-10.
+   - Leader participates as rank 0.
+   - Workers are additional ranks.
+   - Leader splits data shards by benchmark score and sends worker shards as
+     binary payloads.
+   - Participants use torch.distributed with the gloo backend.
+   - Training uses all-reduce of flattened gradients.
+   - Membership is effectively frozen per distributed run because
+     torch.distributed world_size and ranks are fixed. New workers that connect
+     mid-run should wait for the next run.
+
+Important files
+- README.md: User-facing setup and run instructions.
+- context.txt: This handoff file. Keep it current.
+- pyproject.toml: Package metadata and console scripts:
+  - dml-leader = dml_cluster.leader:cli
+  - dml-worker = dml_cluster.worker:cli
+- requirements.txt: Only lists numpy. PyTorch and torchvision are selected by
+  dml_cluster.torch_install because wheels differ by platform/hardware.
+- leader_macos.sh: Creates/uses .venv, installs dependencies, and starts the
+  leader on macOS.
+- bootstrap_macos.sh: Idempotent macOS worker bootstrap. Checks/installs Xcode
+  CLT, Homebrew, curl, git, Python 3.11, Tailscale, selected PyTorch, then
+  starts the worker.
+- bootstrap_windows.ps1: Idempotent Windows worker bootstrap. Checks/installs
+  winget, curl, git, Python 3.11, Tailscale, selected PyTorch, then starts the
+  worker.
+- docs/index.html: GitHub Pages worker join page. It intentionally has no
+  download buttons. It shows copy-paste commands for macOS and Windows that
+  download the full repo zip, expand it, and run the correct bootstrap.
+- dml_cluster/leader.py: Main leader server, worker registry, CLI command loop,
+  heartbeat monitor, federated orchestration, distributed orchestration.
+- dml_cluster/worker.py: Worker connection/reconnect loop, heartbeat sender,
+  task handling, distributed shard receive, and distributed training launch.
+- dml_cluster/protocol.py: Shared JSON-lines and binary payload helpers.
+- dml_cluster/training.py: MNIST model, payload serialization, federated worker
+  training, weighted model averaging, and MNIST evaluation.
+- dml_cluster/distributed_data.py: CIFAR-10 loading and weighted sharding.
+- dml_cluster/distributed_training.py: Per-rank synchronized CIFAR training.
+  Recently refactored locally so one process group is used for the full run.
+- dml_cluster/models.py: CifarCnn model.
+- dml_cluster/hardware.py: Hardware detection and benchmark score.
+- dml_cluster/torch_install.py: Platform-aware PyTorch install command
+  selection.
+
+Runtime commands
+
+Start the leader on macOS:
+chmod +x leader_macos.sh bootstrap_macos.sh
+./leader_macos.sh
+
+Start a macOS worker from a project folder:
+chmod +x bootstrap_macos.sh
+./bootstrap_macos.sh
+
+Start a Windows worker from a project folder:
+powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1
+
+Override the worker leader target for local testing:
+LEADER_HOST=127.0.0.1 LEADER_PORT=8787 ./bootstrap_macos.sh
+
+Windows override:
+$env:LEADER_HOST = "127.0.0.1"
+$env:LEADER_PORT = "8787"
+powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1
+
+Skip PyTorch installation during connection-only bootstrap tests:
+SKIP_TORCH_INSTALL=1 ./bootstrap_macos.sh
+
+Leader interactive commands:
+workers
+start
+start 2
+help
+quit
+
+Run federated mode with useful knobs:
+./leader_macos.sh \
+  --train-batches-per-epoch 200 \
+  --batch-size 64 \
+  --epochs 5 \
+  --eval-batches 40
+
+Run distributed mode:
+./leader_macos.sh \
+  --mode distributed \
+  --dist-port 29501 \
+  --distributed-samples 5000 \
+  --distributed-batches-per-epoch 50 \
+  --epochs 5
+
+If Tailscale IP detection is not the address workers should use for
+torch.distributed, pass it explicitly:
+./leader_macos.sh --mode distributed --dist-master-addr 100.x.y.z
+
+Local loopback distributed test command shape:
+python -m dml_cluster.leader \
+  --host 127.0.0.1 \
+  --port 18989 \
+  --project-dir /tmp/some-leader-project \
+  --mode distributed \
+  --dist-master-addr 127.0.0.1 \
+  --dist-port 29702 \
+  --distributed-samples 512 \
+  --distributed-base-batch 16 \
+  --distributed-batches-per-epoch 3 \
+  --epochs 2 \
+  --distributed-timeout 60
+
+Protocol notes
+The control channel uses newline-delimited JSON objects. Binary payloads are
+used for distributed CIFAR shards.
+
+Common message types:
+- Worker to leader: hello, heartbeat, worker_log, train_result, train_error,
+  distributed_shard_ready, distributed_epoch, distributed_error,
+  distributed_complete.
+- Leader to worker: welcome, reject, shutdown, train_task, distributed_shard,
+  distributed_train_start.
+
+Protocol limits:
+- JSON stream limit: 64 * 1024 * 1024.
+- Binary payload limit: 512 * 1024 * 1024.
+
+Federated mode details
+Leader behavior:
+- Requires at least one connected worker.
+- Creates an initial MNIST model payload with seed 1337.
+- At each epoch boundary, snapshots currently connected workers.
+- Allocates contiguous MNIST batch ranges proportional to worker
+  benchmark_score.
+- Sends each worker a train_task containing model state and batch assignment.
+- Collects train_result messages until timeout.
+- Reassigns lost work to currently connected workers when possible.
+- Uses weighted FedAvg by sample count.
+- Evaluates on MNIST test data.
+
+Worker behavior:
+- Downloads MNIST under .data.
+- Selects cuda, then mps, then cpu.
+- Trains MnistNet, a simple flatten plus two linear layers.
+
+Distributed mode details before latest local fix
+Original behavior:
+- dml_cluster.distributed_training.run_training called run_one_epoch once per
+  epoch.
+- Each epoch initialized a new torch.distributed process group.
+- Each epoch destroyed the process group.
+- This worked for one epoch but failed on epoch 2 in local loopback tests with
+  worker error "dist init: failed to recv, got 0 bytes" and leader timeout
+  "1/2 clients joined".
+
+Distributed mode latest local fix
+Changed file: dml_cluster/distributed_training.py
+
+New behavior:
+- run_training initializes torch.distributed once per distributed run.
+- CifarCnn is constructed once.
+- Adam optimizer is constructed once.
+- DataLoader is constructed once.
+- Rank 0 broadcasts the initial model once.
+- All epochs run inside the same process group.
+- Gradients are still all-reduced per batch.
+- Loss is still all-reduced per epoch.
+- Barriers are used after startup, after each epoch, and before final complete.
+- Process group is destroyed once at the end.
+- Result queue emits distributed_epoch for every epoch and
+  distributed_complete at the end.
+
+Important distributed-mode policy
+- New workers can connect to the leader while a distributed run is active, but
+  they cannot join that active torch.distributed group because rank assignment
+  and world_size are fixed.
+- For stable distributed mode, snapshot workers at run start, freeze membership
+  for that run, and let late workers wait for the next run.
+- If a participating worker drops mid-run, the distributed all-reduce run should
+  fail/stop cleanly. FedAvg mode is the better mode for dynamic worker churn.
+
+Local tests already run
+
+1. Federated loopback test, small run
+Setup:
+- One leader process and one worker process on the same Mac.
+- Separate temporary virtual environments.
+- Bound leader to 127.0.0.1.
+- Worker connected over loopback.
+- Worker hardware: Darwin/arm64, mps, Apple M3 Pro.
+
+Small federated run:
+- epochs=1
+- train_batches_per_epoch=4
+- batch_size=32
+- eval_batches=2
+- samples=128
+Metrics:
+- train_loss=2.2931
+- val_loss=2.2273
+- val_acc=20.31%
+- worker device=mps
+
+Larger federated run:
+- epochs=2
+- train_batches_per_epoch=30
+- batch_size=64
+- eval_batches=20
+- samples_per_epoch=1920
+Metrics:
+- epoch 1 train_loss=1.5212, val_loss=0.7633, val_acc=75.47%
+- epoch 2 train_loss=0.5577, val_loss=0.6504, val_acc=79.22%
+- worker device=mps
+
+2. Distributed loopback test before the stability fix
+Setup:
+- Two temporary virtual environments using system site packages.
+- torch 2.7.0, torchvision 0.22.0 on this Mac.
+- control port=18888
+- distributed port=29601
+- distributed_samples=512
+- distributed_base_batch=16
+- distributed_batches_per_epoch=3
+- epochs=2
+- world_size=2
+- device=mps
+
+Result before fix:
+- epoch 1 completed with loss=2.2972.
+- epoch 2 failed during torch.distributed process-group reinitialization.
+- Worker error: dist init: failed to recv, got 0 bytes.
+- Leader error: Timed out after 91 seconds waiting for clients. 1/2 clients
+  joined.
+
+Clean 1-epoch distributed run before fix:
+- distributed_samples=512
+- epochs=1
+- worker shard=256 samples
+- leader epoch 1 loss=2.3065
+- worker epoch 1 loss=2.3065
+- batches=3
+- device=mps
+- completed successfully.
+
+3. Distributed loopback regression test after the local stability fix
+Setup:
+- Two temporary virtual environments.
+- Reused system PyTorch via --system-site-packages.
+- torch 2.7.0, torchvision 0.22.0.
+- control port=18989
+- distributed port=29702
+- distributed_samples=512
+- distributed_base_batch=16
+- distributed_batches_per_epoch=3
+- epochs=2
+- world_size=2
+- worker shard=257 samples
+- leader and worker both used mps.
+
+Metrics after fix:
+- epoch 1 loss=2.3047
+- epoch 2 loss=2.2747
+- batches=3 each epoch
+- leader distributed rank 0 complete
+- worker distributed complete
+- no epoch-2 rendezvous timeout occurred.
+
+Verification commands run after latest fix
+- python3 -m compileall dml_cluster
+- python3 -m py_compile dml_cluster/distributed_training.py
+- git diff --check
+
+All passed.
+
+GitHub Pages / website work already done
+Initial site:
+- Added docs/index.html with two download buttons for bootstrap_macos.sh and
+  bootstrap_windows.ps1.
+- Updated README.md with the Pages URL.
+- Commit: 35cc0f8 Add worker download GitHub Pages site.
+
+Problem discovered:
+- Raw GitHub script links can show code in browser.
+- Downloading only bootstrap_macos.sh or bootstrap_windows.ps1 is not enough
+  because workers need the full repo code, especially dml_cluster modules.
+
+Final site:
+- Removed download buttons.
+- Simplified docs/index.html into a minimal command-first join page.
+- macOS and Windows command blocks download the full repo zip from GitHub,
+  expand it, then run the platform bootstrap.
+- Commit: 295c4b2 Simplify worker join page.
+- The live Pages URL returned the updated "Join the Distributed ML Worker
+  Network" content after cache propagation.
+
+Website command behavior
+macOS page command:
+- Creates $HOME/dml-worker.
+- Downloads main.zip from GitHub.
+- Unzips it.
+- Enters Distributed_MachineLearning_Training_Inference-main.
+- chmod +x bootstrap_macos.sh.
+- Runs ./bootstrap_macos.sh.
+
+Windows page command:
+- Creates $HOME\dml-worker.
+- Downloads worker.zip from GitHub.
+- Expands it.
+- Enters .\Distributed_MachineLearning_Training_Inference-main.
+- Runs powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1.
+
+Answer to prior question about worker code
+The worker needs the full repo code, not just one bootstrap script. The
+bootstrap calls Python modules inside dml_cluster, including torch_install,
+hardware, worker, protocol, training, and distributed training code.
+
+Other repo inspected
+Path inspected read-only:
+/Users/ruturaj_vasant/Desktop/Academic/Anirudh_calude/10_RuturajProj
+
+Important files there:
+- common.py
+- dataset.py
+- leader.py
+- model.py
+- trainer.py
+- worker.py
+- bootstrap.sh
+- bootstrap.ps1
+- requirements.txt
+
+Findings from that repo:
+- It is also a distributed CIFAR-10 implementation, not a different
+  non-all-reduce method.
+- Uses CIFAR-10 loaded as NumPy arrays.
+- Splits shards by static hardware tier.
+- Uses torch.distributed with gloo.
+- Broadcasts rank-0 model weights to every rank.
+- All-reduces flattened gradients.
+- All-reduces loss for global average logging.
+- Leader sends shards and rank/world-size config to workers.
+- Worker receives shard, waits for training_start, then runs training in an
+  executor thread.
+- It looks like an earlier/direct version of the same distributed all-reduce
+  architecture.
+
+Comparison of methods
+- The other repo and our distributed mode both use CIFAR-10 + gloo +
+  all-reduce gradient synchronization.
+- Our current repo additionally has the federated MNIST FedAvg path.
+- FedAvg is the "other method" compared with all-reduce: workers train local
+  model copies, send weights back, and the leader averages model weights by
+  sample count.
+
+Default leader and ports
+- Default worker target:
+  leader-macbook-pro.taila5426e.ts.net:8787
+- Control channel default port: 8787.
+- Distributed process group default port: 29501.
+- Both ports must be reachable between leader and workers for distributed mode.
+
+Generated/local state
+Expected generated files/directories:
+- .venv/
+- .data/
+- .dml_worker_id
+- __pycache__/
+
+These are ignored by .gitignore and should normally not be committed.
+
+Known caveats and future work
+- The distributed stability fix has passed local two-env loopback testing.
+- Distributed mode currently logs loss but does not evaluate CIFAR validation
+  accuracy.
+- For a real demo, distributed mode should be tested across actual Tailscale
+  machines after the local fix is committed/pushed.
+- If using a fresh install, torch_install.py currently pins torch==2.10.0 and
+  torchvision==0.25.0. Verify package availability if install errors occur.
+- Worker process stays online only while its terminal/process is running.
+- GitHub CLI was installed locally but not authenticated when Pages settings
+  were checked. Pages was later enabled externally and verified live.
+
+Latest worker bootstrap change
+- bootstrap_windows.ps1 now resolves Python 3.11 more defensively for worker
+  installs.
+- It prefers the Windows py launcher with -3.11, skips broken Microsoft
+  WindowsApps python.exe aliases, and stores executable path plus launcher
+  arguments separately instead of returning a single command string.
+- This was added after a Windows worker failed at virtual environment creation
+  with PowerShell trying to execute an invalid python.exe path at
+  Invoke-Python311.
+- Worker setup commands on docs/index.html now download and extract the GitHub
+  zip into a temporary staging directory, sync the repo into the persistent
+  worker runtime directory, and delete the staging directory when the command
+  exits.
+- The persistent runtime keeps .venv, .data, and .dml_worker_id so reruns do not
+  reinstall everything or create a new worker identity.
+- bootstrap_macos.sh and bootstrap_windows.ps1 set PIP_NO_CACHE_DIR=1 by
+  default to avoid keeping large pip download caches outside the virtual
+  environment.
+
+Latest leader usability/reporting change
+- dml_cluster/leader.py now prints explicit leader commands at startup and from
+  help, including start 5 for setting the epoch count interactively.
+- The start command now rejects invalid epoch input instead of silently falling
+  back to the default.
+- Federated runs collect per-epoch workers, samples, train_loss, val_loss,
+  val_acc, and duration_seconds.
+- Distributed runs collect per-epoch world_size, batches, all-reduced loss, and
+  duration_seconds from rank 0.
+- At the end of a run, the leader prints a summary table and ASCII metric graph.
+- It also saves CSV and TXT reports under runs/. The runs/ directory is ignored
+  by git.
+- docs/index.html now includes a Leader Mac command block above the worker
+  setup commands. It shows the distributed-mode dml-leader startup command with
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net and notes that the
+  leader terminal accepts workers and start 5.
+- leader_macos.sh now checks the effective leader control port before startup.
+  If the port is held by an older dml-leader/dml_cluster.leader process, it
+  stops that stale leader before starting the new one. If another unrelated
+  process owns the port, the script exits with a clear message instead of
+  killing it.
+- docs/index.html now uses ./leader_macos.sh for the Leader Mac command so the
+  stale leader cleanup is used by default.
+- pyproject.toml explicitly limits setuptools package discovery to
+  dml_cluster*. This prevents ignored generated top-level directories such as
+  runs/ from breaking pip install -e . during leader/worker bootstrap.
+- bootstrap_windows.ps1 now wraps venv Python/pip commands with Invoke-Checked
+  so native command failures stop the script immediately. It also verifies that
+  dml_cluster.hardware and dml_cluster.worker import after pip install -e .
+  before running hardware detection. This was added after a Windows worker
+  reached python -m dml_cluster.hardware even though an earlier install step may
+  have failed.
+- bootstrap_windows.ps1 was further hardened after a Windows worker installed
+  Python 3.11 via winget but could not find python.exe in the same PowerShell
+  session. Find-Python311 now checks py.exe from PATH/common launcher locations,
+  PythonCore registry install paths, and common Python311 directories before
+  asking the user to reopen PowerShell.
+- dml_cluster/leader.py now supports per-run federated options from the leader
+  terminal. Valid examples:
+  start epochs=5 batches=100 lr=0.03
+  start 5 batches=100 lr=0.03
+  Supported federated keys are epochs, batches/train_batches_per_epoch,
+  batch_size, lr/learning_rate, and eval_batches. These options affect only the
+  current run. Distributed mode still uses startup flags for its different
+  training knobs and rejects federated-only start options.
+
+Recommended immediate next steps
+1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
+2. Add distributed CIFAR validation accuracy if needed for stronger reporting.
+3. Keep updating context.txt after every meaningful change.
+
