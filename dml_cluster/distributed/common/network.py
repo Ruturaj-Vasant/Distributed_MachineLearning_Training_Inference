@@ -40,11 +40,13 @@ def create_gloo_pg_options(master_addr: str, dist_module: Any, timeout: timedelt
 
     process_group_gloo = getattr(dist_module, "ProcessGroupGloo", None)
     if process_group_gloo is None:
+        _set_gloo_socket_ifname_fallback(tailscale_ip)
         return None, tailscale_ip
 
     create_device = getattr(process_group_gloo, "create_device", None)
     options_cls = getattr(process_group_gloo, "_Options", None)
     if create_device is None or options_cls is None:
+        _set_gloo_socket_ifname_fallback(tailscale_ip)
         return None, tailscale_ip
 
     try:
@@ -53,10 +55,22 @@ def create_gloo_pg_options(master_addr: str, dist_module: Any, timeout: timedelt
         if hasattr(options, "_timeout"):
             options._timeout = timeout
     except Exception:
+        # Explicit device creation failed; fall back to GLOO_SOCKET_IFNAME so
+        # Gloo at least binds to the right interface instead of picking any one.
+        _set_gloo_socket_ifname_fallback(tailscale_ip)
         return None, tailscale_ip
 
     os.environ.pop("GLOO_SOCKET_IFNAME", None)
     return options, tailscale_ip
+
+
+def _set_gloo_socket_ifname_fallback(tailscale_ip: str) -> None:
+    """Set GLOO_SOCKET_IFNAME to the Tailscale interface when pg_options are unavailable."""
+    if os.environ.get("GLOO_SOCKET_IFNAME", "").strip():
+        return
+    ifname = _tailscale_interface_name()
+    if ifname:
+        os.environ["GLOO_SOCKET_IFNAME"] = ifname
 
 
 def _tailscale_interface_name() -> str:

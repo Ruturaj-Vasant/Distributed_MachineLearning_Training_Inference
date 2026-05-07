@@ -383,12 +383,18 @@ def run_training(
         return
 
     pg_options, gloo_hostname = create_gloo_pg_options(master_addr, dist, timeout)
-    if gloo_hostname:
-        print(f"[pipeline] rank {rank} using Gloo device hostname={gloo_hostname}", flush=True)
+    if pg_options is not None:
+        print(f"[pipeline] rank {rank} Gloo explicit device hostname={gloo_hostname}", flush=True)
     else:
         gloo_ifname = configure_gloo_socket_ifname(master_addr)
         if gloo_ifname:
             print(f"[pipeline] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
+        elif gloo_hostname:
+            print(
+                f"[pipeline] rank {rank} Tailscale IP={gloo_hostname} "
+                f"(no interface mapped, Gloo will use system default)",
+                flush=True,
+            )
 
     try:
         dist.init_process_group(

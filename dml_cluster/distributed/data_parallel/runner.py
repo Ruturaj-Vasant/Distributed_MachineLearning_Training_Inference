@@ -375,12 +375,22 @@ def run_training(
     print(f"[distributed] rank {rank} dataset shard ready", flush=True)
 
     pg_options, gloo_hostname = create_gloo_pg_options(master_addr, dist, timeout)
-    if gloo_hostname:
-        print(f"[distributed] rank {rank} using Gloo device hostname={gloo_hostname}", flush=True)
+    if pg_options is not None:
+        # Explicit Gloo device bound to Tailscale IPv4 — most reliable on macOS.
+        print(f"[distributed] rank {rank} Gloo explicit device hostname={gloo_hostname}", flush=True)
     else:
+        # pg_options unavailable (old PyTorch API or exception); GLOO_SOCKET_IFNAME
+        # was already set by create_gloo_pg_options fallback if Tailscale is present.
+        # Call configure_gloo_socket_ifname as a safety net for anything missed.
         gloo_ifname = configure_gloo_socket_ifname(master_addr)
         if gloo_ifname:
             print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
+        elif gloo_hostname:
+            print(
+                f"[distributed] rank {rank} Tailscale IP={gloo_hostname} "
+                f"(no interface mapped, Gloo will use system default)",
+                flush=True,
+            )
 
     try:
         print(
