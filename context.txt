@@ -567,6 +567,35 @@ Fix: immediately after storing the dict, override project_dir with
 str(worker.project_dir) so each participant loads datasets from its own
 runtime directory. Commit 48b95b3.
 
+Gloo interface fallback fix (2026-05-07) — commit 9975fbc
+Files: dml_cluster/distributed/common/network.py
+       dml_cluster/distributed/data_parallel/runner.py
+       dml_cluster/distributed/pipeline_parallel/runner.py
+
+Bug: Two related bugs caused the worker to enter dist.init_process_group on
+the wrong network interface (e.g. NYU wireless 10.19.x.x instead of Tailscale),
+making rank 0's Gloo peer-connection to rank 1 unreachable. Rank 0 was stuck in
+CONNECTING state and the Gloo cleanup assertion fired:
+  gloo::EnforceNotMet: Cannot close pair while waiting on connection (SIGABRT)
+
+Bug 1 (network.py create_gloo_pg_options): When ProcessGroupGloo._Options or
+create_device() raised an exception, or when those attrs were missing entirely,
+the function returned (None, tailscale_ip) WITHOUT setting GLOO_SOCKET_IFNAME.
+Fix: added _set_gloo_socket_ifname_fallback(tailscale_ip) which is called from
+all three early-exit paths (ProcessGroupGloo absent, create_device/_Options
+absent, exception in options setup).
+
+Bug 2 (runner.py, both data_parallel and pipeline_parallel): The branch condition
+was `if gloo_hostname` (truthy whenever Tailscale is found), so configure_
+gloo_socket_ifname was NEVER called when Tailscale IP existed but pg_options
+failed. Changed to `if pg_options is not None` so the GLOO_SOCKET_IFNAME
+fallback is always applied when explicit options are absent.
+
+After these fixes:
+- If pg_options creation succeeds: rank uses explicit Gloo device (most reliable)
+- If it fails: GLOO_SOCKET_IFNAME is set to the Tailscale interface (fallback)
+- Either way, Gloo does NOT pick an unrelated interface like NYU wireless
+
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
 2. Add distributed CIFAR validation accuracy if needed for stronger reporting.
