@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..common.power import PowerSampler
-from ..common.network import configure_gloo_socket_ifname, create_gloo_pg_options
+from ..common.network import configure_gloo_socket_ifname
 from ..datasets import load_dataset, shard_dataset
 from ..models import CifarCnn, build_model
 from .compression import TopKCompressor
@@ -374,23 +374,14 @@ def run_training(
         return
     print(f"[distributed] rank {rank} dataset shard ready", flush=True)
 
-    pg_options, gloo_hostname = create_gloo_pg_options(master_addr, dist, timeout)
-    if pg_options is not None:
-        # Explicit Gloo device bound to Tailscale IPv4 — most reliable on macOS.
-        print(f"[distributed] rank {rank} Gloo explicit device hostname={gloo_hostname}", flush=True)
-    else:
-        # pg_options unavailable (old PyTorch API or exception); GLOO_SOCKET_IFNAME
-        # was already set by create_gloo_pg_options fallback if Tailscale is present.
-        # Call configure_gloo_socket_ifname as a safety net for anything missed.
-        gloo_ifname = configure_gloo_socket_ifname(master_addr)
-        if gloo_ifname:
-            print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
-        elif gloo_hostname:
-            print(
-                f"[distributed] rank {rank} Tailscale IP={gloo_hostname} "
-                f"(no interface mapped, Gloo will use system default)",
-                flush=True,
-            )
+    # Force Gloo onto the Tailscale interface via GLOO_SOCKET_IFNAME.
+    # Without this, Gloo falls back to each machine's hostname for interface
+    # selection: the leader's hostname resolves to its Tailscale IP (correct),
+    # but the worker's hostname (e.g. 10-19-95-86.dynapool.wireless.nyu.edu)
+    # resolves to a campus WiFi IP that is unreachable from the leader.
+    gloo_ifname = configure_gloo_socket_ifname(master_addr)
+    if gloo_ifname:
+        print(f"[distributed] rank {rank} GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
 
     try:
         print(
@@ -404,7 +395,6 @@ def run_training(
             world_size=world_size,
             rank=rank,
             timeout=timeout,
-            pg_options=pg_options,
         )
         print(f"[distributed] rank {rank} process group ready", flush=True)
     except Exception as exc:

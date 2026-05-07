@@ -16,7 +16,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ..common.power import PowerSampler
-from ..common.network import configure_gloo_socket_ifname, create_gloo_pg_options
+from ..common.network import configure_gloo_socket_ifname
 from ..data_parallel.runner import DEFAULT_DIST_TIMEOUT_SECONDS, choose_device, synchronize_device
 from ..datasets import load_dataset, shard_dataset
 from ..models import build_model
@@ -382,19 +382,9 @@ def run_training(
         )
         return
 
-    pg_options, gloo_hostname = create_gloo_pg_options(master_addr, dist, timeout)
-    if pg_options is not None:
-        print(f"[pipeline] rank {rank} Gloo explicit device hostname={gloo_hostname}", flush=True)
-    else:
-        gloo_ifname = configure_gloo_socket_ifname(master_addr)
-        if gloo_ifname:
-            print(f"[pipeline] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
-        elif gloo_hostname:
-            print(
-                f"[pipeline] rank {rank} Tailscale IP={gloo_hostname} "
-                f"(no interface mapped, Gloo will use system default)",
-                flush=True,
-            )
+    gloo_ifname = configure_gloo_socket_ifname(master_addr)
+    if gloo_ifname:
+        print(f"[pipeline] rank {rank} GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
 
     try:
         dist.init_process_group(
@@ -403,7 +393,6 @@ def run_training(
             world_size=world_size,
             rank=rank,
             timeout=timeout,
-            pg_options=pg_options,
         )
     except Exception as exc:
         result_q.put(
