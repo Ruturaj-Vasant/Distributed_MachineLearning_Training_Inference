@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..common.power import PowerSampler
-from ..common.network import _tailscale_ipv4
+from ..common.network import configure_gloo_socket_ifname, _tailscale_ipv4
 from ..datasets import load_dataset, shard_dataset
 from ..models import CifarCnn, build_model
 from .compression import TopKCompressor
@@ -374,46 +374,110 @@ def run_training(
         return
     print(f"[distributed] rank {rank} dataset shard ready", flush=True)
 
-    # Gloo auto-routes: when init_method uses the Tailscale IP as master_addr,
-    # Gloo probes a socket toward that IP to discover the local outgoing interface
-    # (utun0 / Tailscale).  GLOO_SOCKET_IFNAME is deliberately NOT set here —
-    # libuv does not enumerate point-to-point tunnel interfaces (utun0), so
-    # setting it causes an "Unable to find address" error on macOS+Tailscale.
-    my_tailscale_ip = _tailscale_ipv4()
-    if my_tailscale_ip:
-        print(f"[distributed] rank {rank} GLOO_SOCKET_IFNAME=utun0", flush=True)
+    # ── Step 1: TCPStore rendezvous ──────────────────────────────────────────
+    from torch.distributed import TCPStore
+    is_master = (rank == 0)
+    print(f"[distributed] rank {rank} ── step 1/5: TCPStore rendezvous ──", flush=True)
     print(
-        f"[distributed] rank {rank} initializing process group "
-        f"{master_addr}:{dist_port} world_size={world_size}",
+        f"[distributed] rank {rank}   connecting to {master_addr}:{dist_port} "
+        f"(is_master={is_master}, world_size={world_size}, timeout={timeout})",
+        flush=True,
+    )
+    try:
+        store = TCPStore(
+            host_name=master_addr,
+            port=dist_port,
+            world_size=world_size,
+            is_master=is_master,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        result_q.put({"type": "distributed_error", "epoch": 0, "rank": rank,
+                      "error": f"TCPStore: rank {rank} could not reach {master_addr}:{dist_port}: {exc}"})
+        return
+    print(f"[distributed] rank {rank}   TCPStore ready — all {world_size} rank(s) joined", flush=True)
+
+    # ── Step 2: Exchange Tailscale IPs ───────────────────────────────────────
+    print(f"[distributed] rank {rank} ── step 2/5: exchanging Tailscale IPs ──", flush=True)
+    my_tailscale_ip = _tailscale_ipv4() or ""
+    store.set(f"tailscale_ip_{rank}", my_tailscale_ip or "(none)")
+    for r in range(world_size):
+        peer_ip = store.get(f"tailscale_ip_{r}").decode()
+        label = "self" if r == rank else "peer"
+        print(f"[distributed] rank {rank}   rank {r} ({label}) Tailscale IP = {peer_ip}", flush=True)
+
+    # ── Step 3: Configure Gloo device ────────────────────────────────────────
+    # Prefer pg_options with create_device(hostname=tailscale_ip): this pins Gloo
+    # to the Tailscale IPv4 unambiguously.  GLOO_SOCKET_IFNAME must be an interface
+    # name (e.g. utun0), never an IP address — Gloo does not accept IPs there.
+    # Fall back to GLOO_SOCKET_IFNAME=<ifname> when pg_options is unavailable.
+    print(f"[distributed] rank {rank} ── step 3/5: configuring Gloo device ──", flush=True)
+    pg_options = None
+    if my_tailscale_ip and master_addr not in {"127.0.0.1", "localhost", "::1"}:
+        process_group_gloo = getattr(dist, "ProcessGroupGloo", None)
+        create_device = getattr(process_group_gloo, "create_device", None)
+        options_cls = getattr(process_group_gloo, "_Options", None)
+        if create_device is not None and options_cls is not None:
+            try:
+                pg_options = options_cls()
+                pg_options._devices = [create_device(hostname=my_tailscale_ip)]
+                print(
+                    f"[distributed] rank {rank}   Tailscale IP={my_tailscale_ip}",
+                    flush=True,
+                )
+                print(
+                    f"[distributed] rank {rank}   Gloo explicit device hostname={my_tailscale_ip}",
+                    flush=True,
+                )
+            except Exception as exc:
+                pg_options = None
+                print(
+                    f"[distributed] rank {rank}   pg_options unavailable ({exc}); "
+                    "falling back to GLOO_SOCKET_IFNAME",
+                    flush=True,
+                )
+    if pg_options is None:
+        gloo_ifname = configure_gloo_socket_ifname(master_addr)
+        if gloo_ifname:
+            print(f"[distributed] rank {rank}   GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
+        else:
+            print(
+                f"[distributed] rank {rank}   WARNING: no Tailscale interface found — "
+                "Gloo will use system default",
+                flush=True,
+            )
+
+    # ── Step 4: Gloo peer connections ────────────────────────────────────────
+    print(f"[distributed] rank {rank} ── step 4/5: Gloo peer connections ──", flush=True)
+    print(
+        f"[distributed] rank {rank}   waiting for all {world_size} rank(s) to establish mesh ...",
         flush=True,
     )
     try:
         dist.init_process_group(
             backend="gloo",
-            init_method=f"tcp://{master_addr}:{dist_port}",
+            store=store,
             world_size=world_size,
             rank=rank,
             timeout=timeout,
+            pg_options=pg_options,
         )
     except Exception as exc:
-        result_q.put(
-            {
-                "type": "distributed_error",
-                "epoch": 0,
-                "rank": rank,
-                "error": f"process group init failed: {exc}",
-            }
-        )
+        result_q.put({"type": "distributed_error", "epoch": 0, "rank": rank,
+                      "error": f"Gloo peer connections failed: {exc}"})
         return
-    print(f"[distributed] rank {rank} process group ready", flush=True)
+    print(f"[distributed] rank {rank}   process group ready", flush=True)
+
+    # ── Step 5: Model setup and broadcast ────────────────────────────────────
+    print(f"[distributed] rank {rank} ── step 5/5: model setup and broadcast ──", flush=True)
     try:
         torch.manual_seed(42)
         model = build_model(model_name, classes, image_size).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
-        print(f"[distributed] rank {rank} broadcasting model", flush=True)
+        print(f"[distributed] rank {rank}   broadcasting model weights from rank 0 ...", flush=True)
         _broadcast_model(model, device)
-        print(f"[distributed] rank {rank} model broadcast complete", flush=True)
+        print(f"[distributed] rank {rank}   model broadcast complete", flush=True)
 
         run_started = time.monotonic()
         total_samples = 0
@@ -427,8 +491,8 @@ def run_training(
             power.start()
 
         print(
-            f"[distributed] rank {rank} training: {epochs} epoch(s), "
-            f"{batches_per_epoch} batch(es)/epoch, batch_size={batch_size}, device={device}",
+            f"[distributed] rank {rank} ── training: {epochs} epoch(s), "
+            f"{batches_per_epoch} batch(es)/epoch, batch_size={batch_size}, device={device} ──",
             flush=True,
         )
         for epoch in range(1, epochs + 1):
