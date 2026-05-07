@@ -59,6 +59,10 @@ async def handle_distributed_shard_config(
     start = int(message.get("start") or 0)
     stop = int(message.get("stop") or start)
     worker.distributed_shard = dict(message)
+    # The leader embeds its own project_dir in the shard config. Override it with
+    # the worker's actual project directory so dataset loading resolves to a local
+    # path instead of the leader's unreachable home directory.
+    worker.distributed_shard["project_dir"] = str(worker.project_dir)
     await worker._send(
         writer,
         {
