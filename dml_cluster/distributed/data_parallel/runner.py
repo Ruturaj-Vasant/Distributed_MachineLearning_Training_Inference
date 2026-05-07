@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..common.power import PowerSampler
-from ..common.network import configure_gloo_socket_ifname
+from ..common.network import configure_gloo_socket_ifname, create_gloo_pg_options
 from ..datasets import load_dataset, shard_dataset
 from ..models import CifarCnn, build_model
 from .compression import TopKCompressor
@@ -333,9 +333,13 @@ def run_training(
         straggler_rank = -1
         straggler_delay_seconds = 0.0
 
-    gloo_ifname = configure_gloo_socket_ifname(master_addr)
-    if gloo_ifname:
-        print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
+    pg_options, gloo_hostname = create_gloo_pg_options(master_addr, dist, timeout)
+    if gloo_hostname:
+        print(f"[distributed] rank {rank} using Gloo device hostname={gloo_hostname}", flush=True)
+    else:
+        gloo_ifname = configure_gloo_socket_ifname(master_addr)
+        if gloo_ifname:
+            print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
 
     try:
         print(
@@ -349,6 +353,7 @@ def run_training(
             world_size=world_size,
             rank=rank,
             timeout=timeout,
+            pg_options=pg_options,
         )
         print(f"[distributed] rank {rank} process group ready", flush=True)
     except Exception as exc:

@@ -4,6 +4,8 @@ import os
 import platform
 import re
 import subprocess
+from datetime import timedelta
+from typing import Any
 
 
 def configure_gloo_socket_ifname(master_addr: str) -> str:
@@ -19,6 +21,42 @@ def configure_gloo_socket_ifname(master_addr: str) -> str:
     if ifname:
         os.environ["GLOO_SOCKET_IFNAME"] = ifname
     return ifname
+
+
+def create_gloo_pg_options(master_addr: str, dist_module: Any, timeout: timedelta) -> tuple[Any | None, str]:
+    """Force Gloo to advertise the local Tailscale IPv4 address when possible.
+
+    On macOS Tailscale uses utun interfaces that can also expose link-local IPv6
+    addresses. Gloo may select one of those unusable addresses even when
+    GLOO_SOCKET_IFNAME is correct, so explicit device creation is more reliable.
+    """
+
+    if master_addr in {"127.0.0.1", "localhost", "::1"}:
+        return None, ""
+
+    tailscale_ip = _tailscale_ipv4()
+    if not tailscale_ip:
+        return None, ""
+
+    process_group_gloo = getattr(dist_module, "ProcessGroupGloo", None)
+    if process_group_gloo is None:
+        return None, tailscale_ip
+
+    create_device = getattr(process_group_gloo, "create_device", None)
+    options_cls = getattr(process_group_gloo, "_Options", None)
+    if create_device is None or options_cls is None:
+        return None, tailscale_ip
+
+    try:
+        options = options_cls()
+        options._devices = [create_device(hostname=tailscale_ip)]
+        if hasattr(options, "_timeout"):
+            options._timeout = timeout
+    except Exception:
+        return None, tailscale_ip
+
+    os.environ.pop("GLOO_SOCKET_IFNAME", None)
+    return options, tailscale_ip
 
 
 def _tailscale_interface_name() -> str:
