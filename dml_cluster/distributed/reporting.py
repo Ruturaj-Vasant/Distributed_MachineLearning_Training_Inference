@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -55,11 +57,14 @@ def print_and_save_run_summary(
             print(line)
 
     runs_dir = project_dir / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
     timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    base = f"{mode}-{timestamp}-{run_id}"
-    csv_path = runs_dir / f"{base}.csv"
-    txt_path = runs_dir / f"{base}.txt"
+    descriptor = _run_descriptor(mode, timestamp, run_id, csv_rows)
+    base = descriptor
+    run_dir = runs_dir / base
+    run_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = run_dir / f"{base}.csv"
+    txt_path = run_dir / f"{base}.txt"
+    manifest_path = run_dir / f"{base}-manifest.json"
 
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(csv_rows[0].keys()))
@@ -75,8 +80,20 @@ def print_and_save_run_summary(
             handle.write("\n".join(graph_lines))
             handle.write("\n")
 
+    manifest = _run_manifest(
+        mode=mode,
+        run_id=run_id,
+        timestamp=timestamp,
+        run_dir=run_dir,
+        csv_path=csv_path,
+        txt_path=txt_path,
+        csv_rows=csv_rows,
+    )
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     print(f"[leader] saved run summary: {csv_path}")
     print(f"[leader] saved run report: {txt_path}")
+    print(f"[leader] saved run manifest: {manifest_path}")
     plot_convergence_for_run(project_dir, csv_path)
 
 
@@ -191,7 +208,7 @@ def _matching_run_csvs(project_dir: Path, current_path: Path, current: Any, pd: 
         return []
     current_key = _comparison_key(current)
     matches: list[Path] = []
-    for path in sorted(runs_dir.glob("distributed-*.csv"), reverse=True):
+    for path in sorted(runs_dir.rglob("distributed-*.csv"), reverse=True):
         if path == current_path:
             continue
         try:
@@ -234,3 +251,107 @@ def _plot_label(path: Path, frame: Any) -> str:
         parts.append(f"{dataset}/{model}")
     parts.append(suffix)
     return " ".join(parts)
+
+
+def _run_descriptor(
+    mode: str,
+    timestamp: str,
+    run_id: str,
+    csv_rows: list[dict[str, Any]],
+) -> str:
+    if not csv_rows:
+        return _slug("_".join([mode, timestamp, run_id]))
+    row = csv_rows[-1]
+    if mode != "distributed":
+        return _slug("_".join([mode, timestamp, run_id]))
+
+    dataset = str(row.get("dataset") or "dataset")
+    model = str(row.get("model") or "model")
+    parallelism = str(row.get("parallelism") or "data")
+    optimizations = str(row.get("optimizations") or row.get("compression") or "none")
+    world_size = _int_label(row.get("world_size") or row.get("participant_count"), "w")
+    image_size = _int_label(row.get("image_size"), "img")
+    batch_size = _int_label(row.get("batch_size"), "batch")
+    batches_per_epoch = _int_label(row.get("batches_per_epoch"), "bpe")
+    epochs = _int_label(row.get("epochs"), "epochs")
+    parts = [
+        mode,
+        dataset,
+        model,
+        parallelism,
+        optimizations,
+        world_size,
+        image_size,
+        batch_size,
+        batches_per_epoch,
+        epochs,
+        timestamp,
+        run_id,
+    ]
+    return _slug("_".join(part for part in parts if part))
+
+
+def _run_manifest(
+    mode: str,
+    run_id: str,
+    timestamp: str,
+    run_dir: Path,
+    csv_path: Path,
+    txt_path: Path,
+    csv_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    final_row = dict(csv_rows[-1]) if csv_rows else {}
+    return {
+        "mode": mode,
+        "run_id": run_id,
+        "created_at": timestamp,
+        "run_dir": str(run_dir),
+        "artifacts": {
+            "csv": str(csv_path),
+            "txt": str(txt_path),
+            "convergence_png": str(csv_path.with_name(csv_path.stem + "-convergence.png")),
+        },
+        "parameters": {
+            key: final_row.get(key)
+            for key in (
+                "parallelism",
+                "optimizations",
+                "model",
+                "dataset",
+                "classes",
+                "image_size",
+                "batch_size",
+                "epochs",
+                "batches_per_epoch",
+                "lr",
+                "momentum",
+                "weight_decay",
+                "dataset_samples",
+                "warmup_batches",
+                "world_size",
+                "participant_count",
+                "amp",
+                "compression",
+                "compress_ratio",
+                "straggler_rank",
+                "straggler_delay_seconds",
+            )
+            if key in final_row
+        },
+        "final_metrics": final_row,
+        "row_count": len(csv_rows),
+    }
+
+
+def _int_label(value: Any, prefix: str) -> str:
+    try:
+        return f"{prefix}{int(float(value))}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _slug(value: str) -> str:
+    value = value.strip().replace("-", "_")
+    value = re.sub(r"[^A-Za-z0-9_.]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value[:180] or "run"

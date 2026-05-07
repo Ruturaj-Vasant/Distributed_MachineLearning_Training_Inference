@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..common.power import PowerSampler
+from ..common.network import configure_gloo_socket_ifname
 from ..datasets import load_dataset, shard_dataset
 from ..models import CifarCnn, build_model
 from .compression import TopKCompressor
@@ -331,6 +332,10 @@ def run_training(
         compress_ratio = 0.01
         straggler_rank = -1
         straggler_delay_seconds = 0.0
+
+    gloo_ifname = configure_gloo_socket_ifname(master_addr)
+    if gloo_ifname:
+        print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}")
 
     try:
         dist.init_process_group(

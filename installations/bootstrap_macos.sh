@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
 export PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
+DML_FAST_START="${DML_FAST_START:-1}"
 
 log() {
   printf '[bootstrap:macos] %s\n' "$*"
@@ -160,11 +161,20 @@ ensure_venv() {
     log "Virtual environment already present"
   fi
 
-  log "Installing project package into virtual environment"
-  "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-  "${VENV_DIR}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements.txt"
-  ensure_torch
-  "${VENV_DIR}/bin/python" -m pip install -e "${PROJECT_DIR}"
+  if [ "${DML_FAST_START}" = "1" ] && venv_ready; then
+    log "Using existing virtual environment"
+  else
+    log "Installing project package into virtual environment"
+    "${VENV_DIR}/bin/python" -m pip install --upgrade pip
+    "${VENV_DIR}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements.txt"
+    ensure_torch
+    "${VENV_DIR}/bin/python" -m pip install -e "${PROJECT_DIR}"
+  fi
+}
+
+venv_ready() {
+  [ -x "${VENV_DIR}/bin/python" ] || return 1
+  "${VENV_DIR}/bin/python" -c "import torch, torchvision, dml_cluster" >/dev/null 2>&1
 }
 
 ensure_torch() {

@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+EXPERIMENT_STARTED_AT="$(date +%s)"
 
 MODEL="resnet50"
 DATASET="cifar10"
@@ -24,6 +25,7 @@ REQUIRED_WORKERS=1
 START_DELAY=2
 AUTO_TIMEOUT=900
 LOOPBACK=0
+RUN_DATA=1
 RUN_PIPELINE=1
 
 usage() {
@@ -41,11 +43,13 @@ Options:
   --epochs N                 Epoch count. Default: 5.
   --base-batch N             Data-parallel per-rank batch and pipeline batch. Default: 32.
   --microbatch N             Pipeline microbatch size. Default: 2.
+  --host HOST                Leader bind host. Use 0.0.0.0 for real multi-machine runs.
   --master-addr HOST         torch.distributed master address.
   --leader-port N            Leader control port. Default: 8787.
   --dist-port N              torch.distributed port. Default: 29501.
   --straggler-delay SEC      Straggler sleep per batch. Default: 3.0.
   --required-workers N       Required workers for distributed experiments. Default: 1.
+  --only-pipeline            Run only the pipeline experiment.
   --skip-pipeline            Skip pipeline experiment.
 EOF
 }
@@ -76,11 +80,13 @@ while [[ $# -gt 0 ]]; do
     --epochs) EPOCHS="$2"; shift 2 ;;
     --base-batch) BASE_BATCH="$2"; shift 2 ;;
     --microbatch) MICROBATCH="$2"; shift 2 ;;
+    --host) HOST="$2"; shift 2 ;;
     --master-addr) MASTER_ADDR="$2"; shift 2 ;;
     --leader-port) LEADER_PORT="$2"; shift 2 ;;
     --dist-port) DIST_PORT="$2"; shift 2 ;;
     --straggler-delay) STRAGGLER_DELAY="$2"; shift 2 ;;
     --required-workers) REQUIRED_WORKERS="$2"; shift 2 ;;
+    --only-pipeline) RUN_DATA=0; RUN_PIPELINE=1; shift ;;
     --skip-pipeline) RUN_PIPELINE=0; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
@@ -143,39 +149,43 @@ start_loopback_worker() {
   LOCAL_WORKER_PID="$!"
 }
 
-run_exp "EXP 1: solo data-parallel baseline" \
-  --required-workers 0 \
-  --distributed-leader-only \
-  --distributed-parallel data \
-  --distributed-optimizations none
+if [[ "${RUN_DATA}" -eq 1 ]]; then
+  run_exp "EXP 1: solo data-parallel baseline" \
+    --required-workers 0 \
+    --distributed-leader-only \
+    --distributed-parallel data \
+    --distributed-optimizations none
 
-start_loopback_worker
+  start_loopback_worker
 
-run_exp "EXP 2: two-node data parallel, no optimization" \
-  --required-workers "${REQUIRED_WORKERS}" \
-  --distributed-parallel data \
-  --distributed-optimizations none
+  run_exp "EXP 2: two-node data parallel, no optimization" \
+    --required-workers "${REQUIRED_WORKERS}" \
+    --distributed-parallel data \
+    --distributed-optimizations none
 
-run_exp "EXP 3: two-node data parallel, TopK" \
-  --required-workers "${REQUIRED_WORKERS}" \
-  --distributed-parallel data \
-  --distributed-optimizations topk \
-  --distributed-compress-ratio "${COMPRESS_RATIO}"
+  run_exp "EXP 3: two-node data parallel, TopK" \
+    --required-workers "${REQUIRED_WORKERS}" \
+    --distributed-parallel data \
+    --distributed-optimizations topk \
+    --distributed-compress-ratio "${COMPRESS_RATIO}"
 
-run_exp "EXP 4: two-node data parallel, straggler" \
-  --required-workers "${REQUIRED_WORKERS}" \
-  --distributed-parallel data \
-  --distributed-optimizations straggler \
-  --distributed-straggler-rank "${STRAGGLER_RANK}" \
-  --distributed-straggler-delay "${STRAGGLER_DELAY}"
+  run_exp "EXP 4: two-node data parallel, straggler" \
+    --required-workers "${REQUIRED_WORKERS}" \
+    --distributed-parallel data \
+    --distributed-optimizations straggler \
+    --distributed-straggler-rank "${STRAGGLER_RANK}" \
+    --distributed-straggler-delay "${STRAGGLER_DELAY}"
 
-run_exp "EXP 5: two-node data parallel, TopK + straggler" \
-  --required-workers "${REQUIRED_WORKERS}" \
-  --distributed-parallel data \
-  --distributed-optimizations topk-straggler \
-  --distributed-compress-ratio "${COMPRESS_RATIO}" \
-  --distributed-straggler-rank "${STRAGGLER_RANK}" \
-  --distributed-straggler-delay "${STRAGGLER_DELAY}"
+  run_exp "EXP 5: two-node data parallel, TopK + straggler" \
+    --required-workers "${REQUIRED_WORKERS}" \
+    --distributed-parallel data \
+    --distributed-optimizations topk-straggler \
+    --distributed-compress-ratio "${COMPRESS_RATIO}" \
+    --distributed-straggler-rank "${STRAGGLER_RANK}" \
+    --distributed-straggler-delay "${STRAGGLER_DELAY}"
+else
+  start_loopback_worker
+fi
 
 if [[ "${RUN_PIPELINE}" -eq 1 ]]; then
   run_exp "EXP 6: two-node pipeline parallel" \
@@ -184,5 +194,10 @@ if [[ "${RUN_PIPELINE}" -eq 1 ]]; then
     --distributed-microbatch-size "${MICROBATCH}" \
     --distributed-optimizations none
 fi
+
+printf '\n=== Building experiment comparison summary ===\n'
+"${PROJECT_DIR}/.venv/bin/python" "${PROJECT_DIR}/experiments/summarize_runs.py" \
+  --project-dir "${PROJECT_DIR}" \
+  --started-at "${EXPERIMENT_STARTED_AT}"
 
 printf '\n=== All experiments complete. Results are in runs/ ===\n'

@@ -174,8 +174,9 @@ class Leader:
 
         tasks = [
             asyncio.create_task(self._monitor_heartbeats(), name="heartbeat-monitor"),
-            asyncio.create_task(self._command_loop(), name="command-loop"),
         ]
+        if not (self.auto_start and self.exit_after_run):
+            tasks.append(asyncio.create_task(self._command_loop(), name="command-loop"))
         if self.auto_start:
             tasks.append(asyncio.create_task(self._auto_start_loop(), name="auto-start"))
         try:

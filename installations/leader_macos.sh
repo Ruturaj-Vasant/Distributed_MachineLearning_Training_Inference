@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
 LEADER_PORT="${LEADER_PORT:-8787}"
+DML_FAST_START="${DML_FAST_START:-1}"
 
 log() {
   printf '[leader:macos] %s\n' "$*"
@@ -115,6 +116,11 @@ python_bin() {
   fi
 }
 
+venv_ready() {
+  [ -x "${VENV_DIR}/bin/python" ] || return 1
+  "${VENV_DIR}/bin/python" -c "import torch, torchvision, dml_cluster" >/dev/null 2>&1
+}
+
 main() {
   cd "${PROJECT_DIR}"
   local port
@@ -132,14 +138,18 @@ main() {
     "${py}" -m venv "${VENV_DIR}"
   fi
 
-  log "Installing project package into virtual environment"
-  "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-  "${VENV_DIR}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements.txt"
-  if ! "${VENV_DIR}/bin/python" -c "import torch, torchvision" >/dev/null 2>&1; then
-    log "Installing PyTorch build selected for this machine"
-    "${VENV_DIR}/bin/python" -m dml_cluster.system.torch_install --install
+  if [ "${DML_FAST_START}" = "1" ] && venv_ready; then
+    log "Using existing virtual environment"
+  else
+    log "Installing project package into virtual environment"
+    "${VENV_DIR}/bin/python" -m pip install --upgrade pip
+    "${VENV_DIR}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements.txt"
+    if ! "${VENV_DIR}/bin/python" -c "import torch, torchvision" >/dev/null 2>&1; then
+      log "Installing PyTorch build selected for this machine"
+      "${VENV_DIR}/bin/python" -m dml_cluster.system.torch_install --install
+    fi
+    "${VENV_DIR}/bin/python" -m pip install -e "${PROJECT_DIR}"
   fi
-  "${VENV_DIR}/bin/python" -m pip install -e "${PROJECT_DIR}"
 
   log "Starting leader"
   exec "${VENV_DIR}/bin/python" -m dml_cluster.leader \

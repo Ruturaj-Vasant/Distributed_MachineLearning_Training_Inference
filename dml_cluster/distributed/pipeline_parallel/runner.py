@@ -16,6 +16,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ..common.power import PowerSampler
+from ..common.network import configure_gloo_socket_ifname
 from ..data_parallel.runner import DEFAULT_DIST_TIMEOUT_SECONDS, choose_device, synchronize_device
 from ..datasets import load_dataset, shard_dataset
 from ..models import build_model
@@ -380,6 +381,10 @@ def run_training(
             }
         )
         return
+
+    gloo_ifname = configure_gloo_socket_ifname(master_addr)
+    if gloo_ifname:
+        print(f"[pipeline] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}")
 
     try:
         dist.init_process_group(

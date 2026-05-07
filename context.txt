@@ -734,3 +734,123 @@ Latest GitHub Pages update
   Solo baseline save/load path passed on a leader-only CIFAR-10/cifar_cnn run.
   Pipeline split metadata smoke test passed.
   HybridRunConfig smoke test passed.
+
+Latest experiment reporting update
+- New distributed/federated report saves now go into one folder per run instead
+  of writing flat files directly under runs/.
+- Distributed run folder and artifact names now include the key workload
+  parameters: mode, dataset, model, parallelism, optimization label, world
+  size, image size, batch size, batches per epoch, epochs, timestamp, and run id.
+  Example:
+  runs/distributed_cifar10_cifar_cnn_data_none_w1_img32_batch8_bpe1_epochs1_20260507_141951_e81d164bda67/
+- Each run folder now contains:
+  <descriptor>.csv
+  <descriptor>.txt
+  <descriptor>-convergence.png
+  <descriptor>-manifest.json
+- The run manifest records artifact paths, run parameters, final metrics, and
+  row count for the run.
+- Added experiments/summarize_runs.py. It scans distributed run CSVs created
+  after a provided start timestamp and writes an experiment-level comparison
+  folder under runs/.
+- experiments/run_experiments.sh now captures its start time and calls
+  experiments/summarize_runs.py after the matrix finishes. The summary folder
+  contains:
+  experiment_summary_<dataset>_<model>_<timestamp>.csv
+  experiment_summary_<dataset>_<model>_<timestamp>.txt
+  experiment_summary_<dataset>_<model>_<timestamp>-manifest.json
+- The comparison summary includes the paper/report fields across runs:
+  experiment label, run directory, CSV path, dataset, model, parallelism,
+  optimization, world size, participant count, image size, batch size, epochs,
+  batches per epoch, dataset samples, samples, seconds, throughput,
+  seconds per batch, speedup, efficiency, loss, validation accuracy, top-5
+  accuracy, compression setting, compression ratio, straggler fields, power,
+  energy, AMP, and metric source.
+- Fixed a script reliability issue: leader auto-start with --exit-after-run no
+  longer starts the interactive stdin command loop. This lets scripted matrix
+  runs exit cleanly after each experiment instead of hanging after printing
+  "auto-start run complete; exiting".
+- Verification:
+  .venv/bin/python -m compileall dml_cluster experiments/summarize_runs.py passed.
+  bash -n experiments/run_experiments.sh passed.
+  A tiny leader-only auto-start distributed smoke test passed and exited with
+  code 0. It saved the new descriptor-named CSV/TXT/PNG/manifest folder.
+  experiments/summarize_runs.py smoke test passed and saved a comparison
+  CSV/TXT/manifest folder.
+
+Latest experiment entrypoint update
+- experiments/run_experiments.sh remains the generic matrix runner.
+- Added --host so real multi-machine runs can bind the leader to 0.0.0.0.
+- Added --only-pipeline so pipeline-only scripts do not also run the full
+  data-parallel matrix.
+- Added six TinyImageNet experiment wrapper scripts:
+  experiments/smoke_resnet101_data_tinyimagenet.sh
+  experiments/smoke_vit_b16_data_tinyimagenet.sh
+  experiments/long_resnet101_data_tinyimagenet.sh
+  experiments/long_vit_b16_data_tinyimagenet.sh
+  experiments/smoke_resnet101_pipeline_tinyimagenet.sh
+  experiments/long_resnet101_pipeline_tinyimagenet.sh
+- Data smoke scripts run the five data-parallel experiments only:
+  solo baseline, data none, data TopK, data straggler, data TopK+straggler.
+  Defaults: TinyImageNet, image_size=224, samples=128, batches=2, epochs=1,
+  base_batch=2, required_workers=1, straggler_delay=0.1.
+- Data long scripts run the same five data-parallel experiments only.
+  Defaults: TinyImageNet, image_size=224, samples=100000, batches=6250,
+  epochs=1, base_batch=8, required_workers=1, straggler_delay=3.0.
+  With leader+1 worker this targets global batch size 16.
+- Pipeline scripts are ResNet101 only and run only the pipeline experiment.
+  Smoke defaults: samples=128, batches=2, epochs=1, base_batch=2,
+  microbatch=1, required_workers=1.
+  Long defaults: samples=100000, batches=6250, epochs=1, base_batch=16,
+  microbatch=2, required_workers=1.
+- Recommended order:
+  1. ./experiments/smoke_resnet101_data_tinyimagenet.sh
+  2. ./experiments/long_resnet101_data_tinyimagenet.sh
+  3. ./experiments/smoke_resnet101_pipeline_tinyimagenet.sh
+  4. ./experiments/long_resnet101_pipeline_tinyimagenet.sh
+  5. ./experiments/smoke_vit_b16_data_tinyimagenet.sh
+  6. ./experiments/long_vit_b16_data_tinyimagenet.sh
+- Each wrapper still produces descriptor-named per-run folders plus a final
+  experiment_summary_<dataset>_<model>_<timestamp>/ folder.
+- Verification:
+  chmod +x experiments/*_tinyimagenet.sh completed.
+  for file in experiments/*.sh; do bash -n "$file"; done passed.
+  ./experiments/run_experiments.sh --help shows --host and --only-pipeline.
+
+Latest Gloo/Tailscale smoke-test fix
+- A real two-machine smoke run reached the control-plane and shard steps:
+  worker connected, leader listed it, auto-start requirement was met, dataset
+  metadata loaded, world_size=2 was computed, shard was assigned, and worker
+  confirmed the shard.
+- The run then crashed in torch.distributed/Gloo with:
+  gloo::EnforceNotMet at gloo/transport/uv/pair.cc, "Cannot close pair while
+  waiting on connection". This happened during process-group formation, not
+  during dependency install or dataset shard assignment.
+- Likely cause: Gloo selected the normal Wi-Fi interface instead of the
+  Tailscale interface. The control channel can still work, but the Gloo full
+  mesh can fail if ranks advertise non-Tailscale addresses.
+- Added dml_cluster/distributed/common/network.py with automatic
+  configure_gloo_socket_ifname(master_addr). It detects the local Tailscale IPv4
+  and maps it to the interface name. On this Mac it resolved to utun0.
+- Data-parallel and pipeline runners now call configure_gloo_socket_ifname()
+  before dist.init_process_group(). For non-loopback multi-machine runs, they
+  set GLOO_SOCKET_IFNAME automatically unless the user already set it.
+- On loopback, GLOO_SOCKET_IFNAME is left unset.
+- Reduced dependency reinstall noise without switching to global installs:
+  installations/leader_macos.sh and installations/bootstrap_macos.sh now use
+  DML_FAST_START=1 by default. If the project venv can import torch,
+  torchvision, and dml_cluster, the scripts skip pip install steps and reuse the
+  existing venv. Set DML_FAST_START=0 to force reinstall.
+- Verification:
+  .venv/bin/python -m compileall dml_cluster experiments/summarize_runs.py passed.
+  bash -n installations/leader_macos.sh installations/bootstrap_macos.sh
+  experiments/*.sh passed.
+  Local network utility check returned utun0 for
+  leader-macbook-pro.taila5426e.ts.net.
+  A local loopback matrix passed with:
+  ./experiments/run_experiments.sh --loopback --model cifar_cnn --dataset
+  cifar10 --image-size 32 --samples 32 --batches 1 --eval-batches 0 --epochs 1
+  --base-batch 2 --skip-pipeline.
+  It completed solo, data none, TopK, straggler, TopK+straggler, saved all
+  descriptor run folders, and generated the summary folder:
+  runs/experiment_summary_cifar10_cifar_cnn_20260507-144542/.
