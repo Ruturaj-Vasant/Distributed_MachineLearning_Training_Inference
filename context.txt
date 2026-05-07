@@ -867,3 +867,32 @@ Latest leader auto-start behavior update
   "auto-start requirement met".
 - Verification:
   .venv/bin/python -m compileall dml_cluster/leader.py passed.
+
+Latest Gloo full-mesh fix
+- The worker traceback showed Gloo reached TCPStore on the leader but timed out
+  in ProcessGroupGloo full-mesh setup. This means the control plane and store
+  were reachable, but the rank-to-rank Gloo address exchange was still bad.
+- lsof showed the leader advertising a link-local IPv6 address on the utun
+  interface during Gloo setup. That can happen on macOS Tailscale even when
+  GLOO_SOCKET_IFNAME is set correctly.
+- Added create_gloo_pg_options(master_addr, dist, timeout) in
+  dml_cluster/distributed/common/network.py. For non-loopback distributed runs,
+  it creates ProcessGroupGloo._Options with a device made from the local
+  Tailscale IPv4 address, e.g. ProcessGroupGloo.create_device(hostname="100.x").
+- Data-parallel and pipeline runners now pass pg_options into
+  dist.init_process_group. If explicit Gloo options are unavailable, they fall
+  back to the old GLOO_SOCKET_IFNAME behavior.
+- Expected logs on the next real two-machine run:
+  [distributed] rank 0 using Gloo device hostname=100.79.142.77
+  [distributed] rank 1 using Gloo device hostname=<worker tailscale IPv4>
+  followed by "process group ready" on both ranks.
+- Verification:
+  .venv/bin/python -m compileall dml_cluster passed.
+  create_gloo_pg_options("leader-macbook-pro.taila5426e.ts.net", dist, 60s)
+  returned host=100.79.142.77 and options=_Options on the leader.
+  Local loopback five-run data-parallel matrix passed and saved a comparison
+  summary:
+  DML_FAST_START=1 ./experiments/run_experiments.sh --loopback --model
+  cifar_cnn --dataset cifar10 --image-size 32 --samples 16 --batches 1
+  --eval-batches 0 --epochs 1 --base-batch 2 --skip-pipeline.
+- Pushed commit 03460ab Force Gloo to use Tailscale IPv4.
