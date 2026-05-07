@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..common.power import PowerSampler
-from ..common.network import configure_gloo_socket_ifname
+from ..common.network import configure_gloo_socket_ifname, _tailscale_ipv4
 from ..datasets import load_dataset, shard_dataset
 from ..models import CifarCnn, build_model
 from .compression import TopKCompressor
@@ -374,49 +374,108 @@ def run_training(
         return
     print(f"[distributed] rank {rank} dataset shard ready", flush=True)
 
-    # Force Gloo onto the Tailscale interface via GLOO_SOCKET_IFNAME.
-    # Without this, Gloo falls back to each machine's hostname for interface
-    # selection: the leader's hostname resolves to its Tailscale IP (correct),
-    # but the worker's hostname (e.g. 10-19-95-86.dynapool.wireless.nyu.edu)
-    # resolves to a campus WiFi IP that is unreachable from the leader.
-    gloo_ifname = configure_gloo_socket_ifname(master_addr)
-    if gloo_ifname:
-        print(f"[distributed] rank {rank} GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
-
+    # ── Step 1: TCPStore rendezvous ──────────────────────────────────────────
+    # Create the store separately so we can log exactly when all ranks join,
+    # before Gloo peer connections even start.
+    from torch.distributed import TCPStore
+    is_master = (rank == 0)
+    print(
+        f"[distributed] rank {rank} ── step 1/5: TCPStore rendezvous ──",
+        flush=True,
+    )
+    print(
+        f"[distributed] rank {rank}   connecting to {master_addr}:{dist_port} "
+        f"(is_master={is_master}, world_size={world_size}, timeout={timeout})",
+        flush=True,
+    )
     try:
-        print(
-            f"[distributed] rank {rank} initializing process group "
-            f"{master_addr}:{dist_port} world_size={world_size}",
-            flush=True,
-        )
-        dist.init_process_group(
-            backend="gloo",
-            init_method=f"tcp://{master_addr}:{dist_port}",
+        store = TCPStore(
+            host_name=master_addr,
+            port=dist_port,
             world_size=world_size,
-            rank=rank,
+            is_master=is_master,
             timeout=timeout,
         )
-        print(f"[distributed] rank {rank} process group ready", flush=True)
     except Exception as exc:
         result_q.put(
             {
                 "type": "distributed_error",
                 "epoch": 0,
                 "rank": rank,
-                "error": f"dist init: {exc}",
+                "error": f"TCPStore rendezvous timeout — rank {rank} could not reach {master_addr}:{dist_port}: {exc}",
+            }
+        )
+        return
+    print(
+        f"[distributed] rank {rank}   TCPStore ready — all {world_size} rank(s) connected to store",
+        flush=True,
+    )
+
+    # ── Step 2: Exchange Tailscale IPs via store ──────────────────────────────
+    print(f"[distributed] rank {rank} ── step 2/5: exchanging Tailscale IPs ──", flush=True)
+    my_tailscale_ip = _tailscale_ipv4() or "(no Tailscale)"
+    store.set(f"tailscale_ip_{rank}", my_tailscale_ip)
+    for r in range(world_size):
+        peer_ip = store.get(f"tailscale_ip_{r}").decode()
+        label = "self" if r == rank else "peer"
+        print(f"[distributed] rank {rank}   rank {r} ({label}) Tailscale IP = {peer_ip}", flush=True)
+
+    # ── Step 3: Set Gloo interface ────────────────────────────────────────────
+    print(f"[distributed] rank {rank} ── step 3/5: configuring Gloo interface ──", flush=True)
+    gloo_ifname = configure_gloo_socket_ifname(master_addr)
+    if gloo_ifname:
+        print(f"[distributed] rank {rank}   GLOO_SOCKET_IFNAME={gloo_ifname} (Tailscale interface)", flush=True)
+    else:
+        print(
+            f"[distributed] rank {rank}   WARNING: no Tailscale interface found — "
+            "Gloo will use system default (may pick wrong interface)",
+            flush=True,
+        )
+
+    # ── Step 4: Gloo peer connections ────────────────────────────────────────
+    print(f"[distributed] rank {rank} ── step 4/5: Gloo peer connections ──", flush=True)
+    print(
+        f"[distributed] rank {rank}   my IP={my_tailscale_ip}, "
+        f"gloo_ifname={gloo_ifname or '(auto)'}, backend=gloo, timeout={timeout}",
+        flush=True,
+    )
+    print(
+        f"[distributed] rank {rank}   waiting for all ranks to establish mesh connections ...",
+        flush=True,
+    )
+    try:
+        dist.init_process_group(
+            backend="gloo",
+            store=store,
+            world_size=world_size,
+            rank=rank,
+            timeout=timeout,
+        )
+        print(f"[distributed] rank {rank}   Gloo mesh established — process group ready", flush=True)
+    except Exception as exc:
+        result_q.put(
+            {
+                "type": "distributed_error",
+                "epoch": 0,
+                "rank": rank,
+                "error": f"Gloo peer connections failed: {exc}",
             }
         )
         return
 
+    # ── Step 5: Model setup and broadcast ────────────────────────────────────
+    print(f"[distributed] rank {rank} ── step 5/5: model setup and broadcast ──", flush=True)
     try:
         torch.manual_seed(42)
+        print(f"[distributed] rank {rank}   building {model_name} ({classes} classes, {image_size}px)", flush=True)
         model = build_model(model_name, classes, image_size).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
-        print(f"[distributed] rank {rank} broadcasting model", flush=True)
+        print(f"[distributed] rank {rank}   broadcasting model weights from rank 0 ...", flush=True)
         _broadcast_model(model, device)
-        print(f"[distributed] rank {rank} model broadcast complete", flush=True)
+        print(f"[distributed] rank {rank}   model broadcast complete", flush=True)
         dist.barrier()
+        print(f"[distributed] rank {rank}   barrier passed — all ranks ready to train", flush=True)
 
         run_started = time.monotonic()
         total_samples = 0
@@ -429,6 +488,11 @@ def run_training(
         if rank == 0:
             power.start()
 
+        print(
+            f"[distributed] rank {rank} ── training: {epochs} epoch(s), "
+            f"{batches_per_epoch} batch(es)/epoch, batch_size={batch_size}, device={device} ──",
+            flush=True,
+        )
         for epoch in range(1, epochs + 1):
             current_epoch = epoch
             if stop.is_set():
@@ -442,6 +506,7 @@ def run_training(
                 )
                 return
 
+            print(f"[distributed] rank {rank}   epoch {epoch}/{epochs} — running {batches_per_epoch} batch(es) ...", flush=True)
             synchronize_device(device)
             epoch_started = time.monotonic()
             result = _run_epoch(
@@ -458,8 +523,10 @@ def run_training(
                 straggler_rank=straggler_rank,
                 straggler_delay_seconds=straggler_delay_seconds,
             )
+            print(f"[distributed] rank {rank}   epoch {epoch}/{epochs} — waiting at barrier for all ranks ...", flush=True)
             dist.barrier()
             synchronize_device(device)
+            print(f"[distributed] rank {rank}   epoch {epoch}/{epochs} — barrier passed", flush=True)
             eval_metrics = _evaluate(model, eval_loader, device) if rank == 0 else {}
             duration_seconds = time.monotonic() - epoch_started
             epoch_samples = int(result["global_samples"])
