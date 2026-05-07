@@ -854,3 +854,16 @@ Latest Gloo/Tailscale smoke-test fix
   It completed solo, data none, TopK, straggler, TopK+straggler, saved all
   descriptor run folders, and generated the summary folder:
   runs/experiment_summary_cifar10_cifar_cnn_20260507-144542/.
+
+Latest leader auto-start behavior update
+- In distributed mode, passing --required-workers > 0 now enables auto-start
+  even if --auto-start was not explicitly provided.
+- This prevents the common mistake where the user starts the leader with
+  --required-workers 1, types "start" before the worker connects, and the run
+  falls back to world_size=1.
+- Auto-start leaders no longer print the interactive "start/start 5/help/quit"
+  command list. Manual leaders with no auto-start still print the command list.
+- The worker requirement log now says "worker requirement met" instead of
+  "auto-start requirement met".
+- Verification:
+  .venv/bin/python -m compileall dml_cluster/leader.py passed.

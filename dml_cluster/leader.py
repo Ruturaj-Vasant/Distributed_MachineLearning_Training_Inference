@@ -170,7 +170,7 @@ class Leader:
         )
         sockets = ", ".join(str(sock.getsockname()) for sock in (self._server.sockets or []))
         print(f"[leader] listening on {sockets}; mode={self.training_mode}")
-        if not (self.auto_start and self.exit_after_run):
+        if not self.auto_start:
             self.print_help()
 
         tasks = [
@@ -385,7 +385,7 @@ class Leader:
             if worker_count >= self.required_workers:
                 if self.required_workers > 0:
                     print(
-                        f"[leader] auto-start requirement met: "
+                        f"[leader] worker requirement met: "
                         f"{worker_count}/{self.required_workers} worker(s)"
                     )
                 return
@@ -1391,7 +1391,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--required-workers",
         type=int,
         default=0,
-        help="Workers required before --auto-start launches training.",
+        help=(
+            "Workers required before a distributed run starts. In distributed mode, "
+            "setting this above 0 also enables auto-start."
+        ),
     )
     parser.add_argument(
         "--start-delay-seconds",
@@ -1411,6 +1414,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def run(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     host = args.host or _tailscale_ipv4() or "0.0.0.0"
+    auto_start = bool(args.auto_start or (args.mode == "distributed" and args.required_workers > 0))
     try:
         optimization = resolve_optimizations(
             selected=args.distributed_optimizations,
@@ -1460,7 +1464,7 @@ async def run(argv: list[str] | None = None) -> None:
         distributed_straggler_rank=optimization.straggler_rank,
         distributed_straggler_delay=optimization.straggler_delay_seconds,
         distributed_leader_only=args.distributed_leader_only,
-        auto_start=args.auto_start,
+        auto_start=auto_start,
         exit_after_run=args.exit_after_run,
         required_workers=max(0, args.required_workers),
         start_delay_seconds=max(0.0, args.start_delay_seconds),
