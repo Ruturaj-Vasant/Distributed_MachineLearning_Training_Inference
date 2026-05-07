@@ -421,16 +421,26 @@ def run_training(
         print(f"[distributed] rank {rank}   rank {r} ({label}) Tailscale IP = {peer_ip}", flush=True)
 
     # ── Step 3: Set Gloo interface ────────────────────────────────────────────
+    # Set GLOO_SOCKET_IFNAME to the Tailscale IPv4 address rather than the
+    # interface name (utun0).  Gloo accepts both, but the IP form avoids the
+    # IPv6 link-local address that utun0 also exposes on macOS — which the
+    # remote machine cannot route to across networks.
     print(f"[distributed] rank {rank} ── step 3/5: configuring Gloo interface ──", flush=True)
-    gloo_ifname = configure_gloo_socket_ifname(master_addr)
-    if gloo_ifname:
-        print(f"[distributed] rank {rank}   GLOO_SOCKET_IFNAME={gloo_ifname} (Tailscale interface)", flush=True)
+    import os as _os
+    if my_tailscale_ip and my_tailscale_ip != "(no Tailscale)" and master_addr not in {"127.0.0.1", "localhost", "::1"}:
+        _os.environ["GLOO_SOCKET_IFNAME"] = my_tailscale_ip
+        gloo_ifname = my_tailscale_ip
+        print(f"[distributed] rank {rank}   GLOO_SOCKET_IFNAME={gloo_ifname} (Tailscale IPv4)", flush=True)
     else:
-        print(
-            f"[distributed] rank {rank}   WARNING: no Tailscale interface found — "
-            "Gloo will use system default (may pick wrong interface)",
-            flush=True,
-        )
+        gloo_ifname = configure_gloo_socket_ifname(master_addr)
+        if gloo_ifname:
+            print(f"[distributed] rank {rank}   GLOO_SOCKET_IFNAME={gloo_ifname} (interface fallback)", flush=True)
+        else:
+            print(
+                f"[distributed] rank {rank}   WARNING: no Tailscale IP found — "
+                "Gloo will use system default (may pick wrong interface)",
+                flush=True,
+            )
 
     # ── Step 4: Gloo peer connections ────────────────────────────────────────
     print(f"[distributed] rank {rank} ── step 4/5: Gloo peer connections ──", flush=True)

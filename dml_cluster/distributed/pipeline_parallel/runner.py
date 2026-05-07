@@ -382,7 +382,14 @@ def run_training(
         )
         return
 
-    gloo_ifname = configure_gloo_socket_ifname(master_addr)
+    import os as _os
+    from ..common.network import _tailscale_ipv4 as _ts_ip
+    _ts = _ts_ip()
+    if _ts and master_addr not in {"127.0.0.1", "localhost", "::1"}:
+        _os.environ["GLOO_SOCKET_IFNAME"] = _ts
+        gloo_ifname = _ts
+    else:
+        gloo_ifname = configure_gloo_socket_ifname(master_addr)
     if gloo_ifname:
         print(f"[pipeline] rank {rank} GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
 
