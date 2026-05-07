@@ -295,6 +295,7 @@ class Leader:
             "distributed_epoch",
             "distributed_error",
             "distributed_complete",
+            "distributed_diagnostic",
         }:
             run_id = str(message.get("run_id") or "")
             waiter = self._distributed_waiters.get(run_id)
