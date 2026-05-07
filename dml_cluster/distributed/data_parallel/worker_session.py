@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import pickle
 import queue
 import threading
 from typing import Any
 
 from ...communication.protocol import read_binary
+from ..common.network import _tailscale_ipv4
 from .runner import run_training
 
 
@@ -107,6 +109,24 @@ async def start_distributed_training(
             },
         )
         return
+
+    # Send a diagnostic ping back to the leader BEFORE starting Gloo so the
+    # leader can see the worker's Tailscale IP in its own log.  This makes
+    # cross-machine interface mismatches immediately visible without having
+    # to read the worker's terminal output.
+    tailscale_ip = await asyncio.to_thread(_tailscale_ipv4)
+    gloo_socket_ifname = os.environ.get("GLOO_SOCKET_IFNAME", "")
+    await worker._send(
+        writer,
+        {
+            "type": "distributed_diagnostic",
+            "run_id": run_id,
+            "worker_id": worker.worker_id,
+            "rank": int(message.get("rank") or 0),
+            "tailscale_ip": tailscale_ip,
+            "gloo_socket_ifname": gloo_socket_ifname,
+        },
+    )
 
     worker._distributed_stop_event = threading.Event()
     worker._distributed_training_task = asyncio.create_task(

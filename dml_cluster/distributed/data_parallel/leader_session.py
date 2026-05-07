@@ -365,6 +365,23 @@ def handle_worker_distributed_result(
 ) -> bool:
     message_type = message.get("type")
     worker_id = str(message.get("worker_id") or "")
+    if message_type == "distributed_diagnostic":
+        tailscale_ip = str(message.get("tailscale_ip") or "")
+        gloo_ifname = str(message.get("gloo_socket_ifname") or "")
+        rank = int(message.get("rank") or 0)
+        if tailscale_ip:
+            gloo_info = f"GLOO_SOCKET_IFNAME={gloo_ifname}" if gloo_ifname else "using explicit Gloo device"
+            print(
+                f"[leader] worker {worker_id[:8]} rank {rank} Tailscale IP={tailscale_ip} ({gloo_info})",
+                flush=True,
+            )
+        else:
+            print(
+                f"[leader] worker {worker_id[:8]} rank {rank} WARNING: no Tailscale IP detected — "
+                "Gloo peer connections will likely fail. Run 'git pull' on the worker machine and restart.",
+                flush=True,
+            )
+        return True
     if message_type == "distributed_epoch":
         if run_rows is not None:
             merge_worker_epoch_metrics(run_rows, message)
