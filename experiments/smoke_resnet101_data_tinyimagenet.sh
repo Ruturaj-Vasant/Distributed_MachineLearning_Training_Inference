@@ -17,7 +17,6 @@ exec "${SCRIPT_DIR}/run_experiments.sh" \
   --base-batch "${BASE_BATCH:-2}" \
   --microbatch "${MICROBATCH:-1}" \
   --host "${HOST:-0.0.0.0}" \
-  --master-addr "${MASTER_ADDR:-leader-macbook-pro.taila5426e.ts.net}" \
   --leader-port "${LEADER_PORT:-8787}" \
   --dist-port "${DIST_PORT:-29501}" \
   --required-workers "${REQUIRED_WORKERS:-1}" \

@@ -17,7 +17,7 @@ MICROBATCH=2
 COMPRESS_RATIO=0.01
 STRAGGLER_RANK=1
 STRAGGLER_DELAY=3.0
-MASTER_ADDR="leader-macbook-pro.taila5426e.ts.net"
+MASTER_ADDR=""
 HOST=""
 LEADER_PORT=8787
 DIST_PORT=29501
@@ -119,13 +119,15 @@ leader_base=(
   --distributed-batches-per-epoch "${BATCHES}"
   --distributed-eval-batches "${EVAL_BATCHES}"
   --epochs "${EPOCHS}"
-  --dist-master-addr "${MASTER_ADDR}"
   --distributed-timeout "${DIST_TIMEOUT}"
   --auto-start
   --exit-after-run
   --start-delay-seconds "${START_DELAY}"
   --auto-start-timeout "${AUTO_TIMEOUT}"
 )
+if [[ -n "${MASTER_ADDR}" ]]; then
+  leader_base+=(--dist-master-addr "${MASTER_ADDR}")
+fi
 if [[ -n "${HOST}" ]]; then
   leader_base+=(--host "${HOST}")
 fi
