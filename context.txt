@@ -551,6 +551,22 @@ Latest modularization change
   utility move with leader rank 0 plus one local worker rank 1, world_size=2,
   samples=64, batches_per_epoch=1, loss about 2.2991.
 
+Worker project_dir bug fix (2026-05-07)
+File: dml_cluster/distributed/data_parallel/worker_session.py
+
+Bug: handle_distributed_shard_config stored the incoming shard config dict
+verbatim, including project_dir which was set to the LEADER's filesystem path
+(e.g. /Users/ruturaj_vasant/Desktop/Academic/DS_Project). When the worker's
+_build_local_dataset_loader used that path to locate .data/tiny-imagenet-200/,
+it failed with Permission denied or FileNotFoundError on real worker machines
+because the leader's home directory path does not exist there.
+Symptom in logs: "distributed error: dataset load: [Errno 13] Permission denied:
+'/Users/ruturaj_vasant'"
+
+Fix: immediately after storing the dict, override project_dir with
+str(worker.project_dir) so each participant loads datasets from its own
+runtime directory. Commit 48b95b3.
+
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
 2. Add distributed CIFAR validation accuracy if needed for stronger reporting.
