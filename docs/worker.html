@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Worker Commands | Distributed ML Cluster</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="index.html" aria-label="Distributed ML Cluster home">
+          <span class="mark" aria-hidden="true">D</span>
+          <span>
+            <span class="brand-title">Distributed ML Cluster</span>
+            <span class="brand-meta">Worker install and listen commands</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Site navigation">
+          <a href="index.html">Overview</a>
+          <a href="leader.html">Leader</a>
+          <a href="worker.html" aria-current="page">Worker</a>
+          <a href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">GitHub</a>
+        </nav>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Compute node</p>
+          <h1 id="page-title">Worker commands.</h1>
+          <p class="lede">
+            Run one command block per worker machine. The bootstrap installs
+            dependencies, creates the runtime environment, connects to the
+            leader, and keeps listening for training runs.
+          </p>
+        </div>
+        <aside class="status" aria-label="Worker default target">
+          <h2>Default Target</h2>
+          <dl>
+            <dt>Leader</dt>
+            <dd><code>leader-macbook-pro.taila5426e.ts.net</code></dd>
+            <dt>Port</dt>
+            <dd><code>8787</code></dd>
+            <dt>State</dt>
+            <dd><code>$HOME/dml-worker</code></dd>
+          </dl>
+        </aside>
+      </section>
+
+      <section class="section" aria-label="Worker install commands">
+        <div class="section-head">
+          <h2 class="section-title">Install And Listen</h2>
+          <p class="section-note">
+            The repo is downloaded into a temporary staging folder, copied into
+            a persistent runtime directory, and then started as a worker.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="command">
+            <div class="command-head">
+              <h2>macOS Worker</h2>
+              <span class="tag">Terminal</span>
+            </div>
+            <pre><code>set -e
+work="$HOME/dml-worker"
+runtime="$work/Distributed_MachineLearning_Training_Inference-main"
+stage="$(mktemp -d)"
+cleanup() { [ -n "$stage" ] &amp;&amp; rm -rf "$stage"; }
+trap cleanup EXIT
+
+mkdir -p "$runtime" &amp;&amp; \
+curl -L "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -o "$stage/worker.zip" &amp;&amp; \
+unzip -q -o "$stage/worker.zip" -d "$stage" &amp;&amp; \
+rsync -a --delete --exclude ".venv/" --exclude ".data/" --exclude ".dml_worker_id" "$stage/Distributed_MachineLearning_Training_Inference-main/" "$runtime/" &amp;&amp; \
+cd "$runtime" &amp;&amp; \
+chmod +x installations/bootstrap_macos.sh &amp;&amp; \
+./installations/bootstrap_macos.sh</code></pre>
+          </article>
+
+          <article class="command">
+            <div class="command-head">
+              <h2>Windows Worker</h2>
+              <span class="tag">PowerShell</span>
+            </div>
+            <pre><code>$work = Join-Path $HOME "dml-worker"
+$runtime = Join-Path $work "Distributed_MachineLearning_Training_Inference-main"
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("dml-worker-install-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $runtime, $stage | Out-Null
+
+try {
+  Invoke-WebRequest -Uri "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -OutFile (Join-Path $stage "worker.zip")
+  Expand-Archive -Path (Join-Path $stage "worker.zip") -DestinationPath $stage -Force
+  $source = Join-Path $stage "Distributed_MachineLearning_Training_Inference-main"
+  Get-ChildItem -Force $runtime | Where-Object { @(".venv", ".data", ".dml_worker_id") -notcontains $_.Name } | Remove-Item -Recurse -Force
+  Get-ChildItem -Force $source | Copy-Item -Destination $runtime -Recurse -Force
+  Set-Location $runtime
+  powershell -ExecutionPolicy Bypass -File .\installations\bootstrap_windows.ps1
+} finally {
+  Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+}</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" aria-label="Worker override commands">
+        <div class="section-head">
+          <h2 class="section-title">Override Leader Target</h2>
+          <p class="section-note">
+            Use this only when testing against a different leader address or
+            port.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="command">
+            <div class="command-head">
+              <h2>macOS Override</h2>
+              <span class="tag">Terminal</span>
+            </div>
+            <pre><code>cd "$HOME/dml-worker/Distributed_MachineLearning_Training_Inference-main"
+LEADER_HOST=127.0.0.1 LEADER_PORT=8787 ./installations/bootstrap_macos.sh</code></pre>
+          </article>
+          <article class="command">
+            <div class="command-head">
+              <h2>Windows Override</h2>
+              <span class="tag">PowerShell</span>
+            </div>
+            <pre><code>Set-Location "$HOME\dml-worker\Distributed_MachineLearning_Training_Inference-main"
+$env:LEADER_HOST = "127.0.0.1"
+$env:LEADER_PORT = "8787"
+powershell -ExecutionPolicy Bypass -File .\installations\bootstrap_windows.ps1</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <p class="callout">
+        <strong>Keep the terminal open.</strong> The worker stays available only
+        while the worker process is running. Stop it with <code>Ctrl+C</code>.
+      </p>
+    </main>
+  </body>
+</html>

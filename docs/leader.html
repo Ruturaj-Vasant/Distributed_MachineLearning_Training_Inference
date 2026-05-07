@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Leader Commands | Distributed ML Cluster</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="index.html" aria-label="Distributed ML Cluster home">
+          <span class="mark" aria-hidden="true">D</span>
+          <span>
+            <span class="brand-title">Distributed ML Cluster</span>
+            <span class="brand-meta">Leader command reference</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Site navigation">
+          <a href="index.html">Overview</a>
+          <a href="leader.html" aria-current="page">Leader</a>
+          <a href="worker.html">Worker</a>
+          <a href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">GitHub</a>
+        </nav>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Coordinator Mac</p>
+          <h1 id="page-title">Leader commands.</h1>
+          <p class="lede">
+            Start the control server, choose a training mode, and run the
+            experiment matrix. Workers connect to this process over Tailscale.
+          </p>
+        </div>
+        <aside class="status" aria-label="Leader settings">
+          <h2>Leader Defaults</h2>
+          <dl>
+            <dt>Host</dt>
+            <dd><code>leader-macbook-pro.taila5426e.ts.net</code></dd>
+            <dt>Control</dt>
+            <dd><code>8787</code></dd>
+            <dt>Distributed</dt>
+            <dd><code>29501</code></dd>
+          </dl>
+        </aside>
+      </section>
+
+      <section class="section" aria-label="Install leader">
+        <div class="section-head">
+          <h2 class="section-title">Install And Start</h2>
+          <p class="section-note">
+            Use this on the leader Mac from the project checkout.
+          </p>
+        </div>
+        <article class="command">
+          <div class="command-head">
+            <h2>Default Leader</h2>
+            <span class="tag">Terminal</span>
+          </div>
+          <pre><code>cd /Users/ruturaj_vasant/Desktop/Academic/DS_Project
+chmod +x installations/leader_macos.sh
+
+./installations/leader_macos.sh</code></pre>
+          <p class="command-note">
+            In the leader terminal, use <code>workers</code> to list joined
+            workers and <code>start 5</code> to run five epochs.
+          </p>
+        </article>
+      </section>
+
+      <section class="section" aria-label="Federated commands">
+        <div class="section-head">
+          <h2 class="section-title">Federated Mode</h2>
+          <p class="section-note">
+            MNIST model averaging with per-run epoch, batch, and learning-rate
+            overrides in the leader terminal.
+          </p>
+        </div>
+        <article class="command">
+          <div class="command-head">
+            <h2>Federated MNIST</h2>
+            <span class="tag">Terminal</span>
+          </div>
+          <pre><code>./installations/leader_macos.sh \
+  --mode federated \
+  --train-batches-per-epoch 200 \
+  --batch-size 64 \
+  --epochs 5 \
+  --eval-batches 40</code></pre>
+          <p class="command-note">
+            Runtime command examples: <code>start</code>,
+            <code>start 5</code>, or
+            <code>start epochs=5 batches=100 lr=0.03</code>.
+          </p>
+        </article>
+      </section>
+
+      <section class="section" aria-label="Distributed data parallel commands">
+        <div class="section-head">
+          <h2 class="section-title">Distributed Data Parallel</h2>
+          <p class="section-note">
+            Synchronous Gloo all-reduce. Use
+            <code>--distributed-optimizations</code> to switch experiment
+            variants.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="command">
+            <div class="command-head">
+              <h2>No Optimization</h2>
+              <span class="tag">Data</span>
+            </div>
+            <pre><code>./installations/leader_macos.sh \
+  --mode distributed \
+  --distributed-parallel data \
+  --distributed-dataset cifar10 \
+  --distributed-model resnet50 \
+  --distributed-image-size 64 \
+  --distributed-samples 10000 \
+  --distributed-batches-per-epoch 100 \
+  --distributed-eval-batches 20 \
+  --distributed-optimizations none \
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
+  --epochs 5</code></pre>
+          </article>
+
+          <article class="command">
+            <div class="command-head">
+              <h2>TopK Compression</h2>
+              <span class="tag">Data</span>
+            </div>
+            <pre><code>./installations/leader_macos.sh \
+  --mode distributed \
+  --distributed-parallel data \
+  --distributed-dataset cifar10 \
+  --distributed-model resnet50 \
+  --distributed-image-size 64 \
+  --distributed-samples 10000 \
+  --distributed-batches-per-epoch 100 \
+  --distributed-eval-batches 20 \
+  --distributed-optimizations topk \
+  --distributed-compress-ratio 0.01 \
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
+  --epochs 5</code></pre>
+          </article>
+
+          <article class="command">
+            <div class="command-head">
+              <h2>Straggler Injection</h2>
+              <span class="tag">Data</span>
+            </div>
+            <pre><code>./installations/leader_macos.sh \
+  --mode distributed \
+  --distributed-parallel data \
+  --distributed-dataset cifar10 \
+  --distributed-model resnet50 \
+  --distributed-image-size 64 \
+  --distributed-samples 10000 \
+  --distributed-batches-per-epoch 100 \
+  --distributed-eval-batches 20 \
+  --distributed-optimizations straggler \
+  --distributed-straggler-rank 1 \
+  --distributed-straggler-delay 3.0 \
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
+  --epochs 5</code></pre>
+          </article>
+
+          <article class="command">
+            <div class="command-head">
+              <h2>TopK And Straggler</h2>
+              <span class="tag">Data</span>
+            </div>
+            <pre><code>./installations/leader_macos.sh \
+  --mode distributed \
+  --distributed-parallel data \
+  --distributed-dataset cifar10 \
+  --distributed-model resnet50 \
+  --distributed-image-size 64 \
+  --distributed-samples 10000 \
+  --distributed-batches-per-epoch 100 \
+  --distributed-eval-batches 20 \
+  --distributed-optimizations topk-straggler \
+  --distributed-compress-ratio 0.01 \
+  --distributed-straggler-rank 1 \
+  --distributed-straggler-delay 3.0 \
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
+  --epochs 5</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" aria-label="Pipeline commands">
+        <div class="section-head">
+          <h2 class="section-title">Pipeline Parallel</h2>
+          <p class="section-note">
+            Two-stage ResNet50, ResNet101, or ViT-B/16 pipeline with one leader
+            and one worker.
+          </p>
+        </div>
+        <article class="command">
+          <div class="command-head">
+            <h2>Two-Stage Pipeline</h2>
+            <span class="tag">Pipeline</span>
+          </div>
+          <pre><code>./installations/leader_macos.sh \
+  --mode distributed \
+  --distributed-parallel pipeline \
+  --distributed-dataset cifar10 \
+  --distributed-model resnet50 \
+  --distributed-image-size 64 \
+  --distributed-samples 10000 \
+  --distributed-base-batch 8 \
+  --distributed-microbatch-size 2 \
+  --distributed-batches-per-epoch 100 \
+  --distributed-optimizations none \
+  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
+  --epochs 5</code></pre>
+          <p class="command-note">
+            Pipeline mode ignores data-parallel optimization modes because it
+            does not all-reduce gradients.
+          </p>
+        </article>
+      </section>
+
+      <section class="section" aria-label="Experiment matrix">
+        <div class="section-head">
+          <h2 class="section-title">Experiment Matrix</h2>
+          <p class="section-note">
+            Start one worker first, then run the full matrix. Reports are saved
+            under <code>runs/</code>.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="command">
+            <div class="command-head">
+              <h2>Real Two-Machine Matrix</h2>
+              <span class="tag">Experiment</span>
+            </div>
+            <pre><code>./experiments/run_experiments.sh</code></pre>
+          </article>
+          <article class="command">
+            <div class="command-head">
+              <h2>Local Smoke Matrix</h2>
+              <span class="tag">Experiment</span>
+            </div>
+            <pre><code>./experiments/run_experiments.sh \
+  --loopback \
+  --model cifar_cnn \
+  --image-size 32 \
+  --skip-pipeline</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <p class="callout">
+        <strong>Ports:</strong> workers need the leader control port
+        <code>8787</code>. Distributed training also needs
+        <code>--dist-port 29501</code> reachable between leader and workers.
+      </p>
+    </main>
+  </body>
+</html>

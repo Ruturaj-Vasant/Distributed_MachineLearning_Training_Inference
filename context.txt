@@ -673,6 +673,21 @@ Latest heavy distributed training work
   fields: optimizations=straggler, straggler_delay_seconds=0.1,
   straggler_delay_total_seconds=0.1, and
   worker_straggler_delay_total_seconds=0.1.
+
+Latest GitHub Pages update
+- Replaced the single dense docs/index.html command page with a small
+  docs-style Pages site:
+  docs/index.html is now an overview/router page.
+  docs/leader.html contains leader installation/start commands, federated mode,
+  distributed data-parallel variants, TopK, straggler, TopK+straggler,
+  pipeline, and experiment matrix commands.
+  docs/worker.html contains only worker install/listen commands for macOS and
+  Windows, plus optional LEADER_HOST/LEADER_PORT override commands.
+  docs/styles.css holds the shared page styling.
+- The Pages commands use the current installations/ script paths and the new
+  --distributed-optimizations flag.
+- HTML parser smoke check passed for docs/index.html, docs/leader.html, and
+  docs/worker.html.
   Data-parallel straggler smoke test passed with two local processes on
   CIFAR-10/cifar_cnn, rank 1 delayed by 0.1 seconds per batch. Rank 1 reported
   straggler_delay_total_seconds=0.1; rank 0 reported 0.0.

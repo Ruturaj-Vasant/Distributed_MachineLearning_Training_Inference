@@ -3,365 +3,90 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Distributed ML Cluster Commands</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #f4f6f8;
-        --ink: #101828;
-        --muted: #667085;
-        --line: #d0d5dd;
-        --panel: #ffffff;
-        --panel-soft: #f9fafb;
-        --code: #111827;
-        --code-text: #f3f4f6;
-        --accent: #0f766e;
-        --accent-2: #2563eb;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        min-height: 100vh;
-        background: var(--bg);
-        color: var(--ink);
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-          "Segoe UI", sans-serif;
-        letter-spacing: 0;
-      }
-
-      main {
-        width: min(1040px, calc(100% - 32px));
-        margin: 0 auto;
-        padding: 34px 0 48px;
-      }
-
-      header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 20px;
-        padding-bottom: 52px;
-      }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-width: 0;
-      }
-
-      .mark {
-        width: 34px;
-        height: 34px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--panel);
-      }
-
-      .brand span {
-        display: block;
-      }
-
-      .brand-name {
-        font-size: 15px;
-        font-weight: 750;
-        line-height: 1.2;
-      }
-
-      .brand-meta {
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.2;
-        margin-top: 3px;
-      }
-
-      .repo {
-        color: var(--accent-2);
-        font-size: 14px;
-        font-weight: 650;
-        text-decoration: none;
-        white-space: nowrap;
-      }
-
-      .repo:hover {
-        text-decoration: underline;
-      }
-
-      .hero {
-        max-width: 760px;
-        padding-bottom: 34px;
-      }
-
-      h1 {
-        margin: 0;
-        font-size: clamp(38px, 7vw, 72px);
-        line-height: 0.96;
-        letter-spacing: 0;
-      }
-
-      .lede {
-        margin: 20px 0 0;
-        max-width: 700px;
-        color: var(--muted);
-        font-size: 18px;
-        line-height: 1.65;
-      }
-
-      .commands {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 18px;
-      }
-
-      .section-title {
-        margin: 0 0 12px;
-        color: var(--muted);
-        font-size: 13px;
-        font-weight: 800;
-        letter-spacing: 0;
-        text-transform: uppercase;
-      }
-
-      .leader-command {
-        margin-bottom: 26px;
-      }
-
-      .panel {
-        min-width: 0;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--panel);
-        overflow: hidden;
-      }
-
-      .panel.wide {
-        width: 100%;
-      }
-
-      .panel-head {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 18px 18px 14px;
-        border-bottom: 1px solid var(--line);
-        background: var(--panel-soft);
-      }
-
-      .panel-note {
-        margin: 0;
-        padding: 14px 18px 16px;
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.55;
-        border-top: 1px solid var(--line);
-      }
-
-      h2 {
-        margin: 0;
-        font-size: 19px;
-        line-height: 1.25;
-        letter-spacing: 0;
-      }
-
-      .shell {
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 700;
-        line-height: 1.5;
-        white-space: nowrap;
-      }
-
-      pre {
-        margin: 0;
-        min-height: 315px;
-        overflow-x: auto;
-        background: var(--code);
-        color: var(--code-text);
-        padding: 18px;
-        font-family:
-          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        font-size: 12.5px;
-        line-height: 1.75;
-        white-space: pre;
-      }
-
-      .panel.compact pre {
-        min-height: 220px;
-      }
-
-      .commands .section-title {
-        grid-column: 1 / -1;
-        margin-bottom: -6px;
-      }
-
-      code {
-        font-family:
-          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-      }
-
-      .footer-note {
-        display: flex;
-        justify-content: space-between;
-        gap: 18px;
-        margin-top: 18px;
-        padding-top: 18px;
-        color: var(--muted);
-        border-top: 1px solid var(--line);
-        font-size: 14px;
-        line-height: 1.6;
-      }
-
-      .footer-note p {
-        margin: 0;
-      }
-
-      .accent {
-        color: var(--accent);
-        font-weight: 750;
-      }
-
-      @media (max-width: 860px) {
-        main {
-          width: min(100% - 24px, 680px);
-          padding-top: 22px;
-        }
-
-        header {
-          align-items: flex-start;
-          flex-direction: column;
-          padding-bottom: 34px;
-        }
-
-        h1 {
-          font-size: clamp(36px, 12vw, 54px);
-        }
-
-        .lede {
-          font-size: 16px;
-        }
-
-        .commands,
-        .footer-note {
-          grid-template-columns: 1fr;
-          flex-direction: column;
-        }
-
-        pre {
-          min-height: auto;
-          font-size: 12px;
-        }
-      }
-    </style>
+    <title>Distributed ML Cluster</title>
+    <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main>
-      <header>
-        <div class="brand">
-          <div class="mark" aria-hidden="true"></div>
-          <div>
-            <span class="brand-name">Distributed ML Training</span>
-            <span class="brand-meta">Leader and worker commands</span>
-          </div>
-        </div>
-        <a class="repo" href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">GitHub repository</a>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="index.html" aria-label="Distributed ML Cluster home">
+          <span class="mark" aria-hidden="true">D</span>
+          <span>
+            <span class="brand-title">Distributed ML Cluster</span>
+            <span class="brand-meta">Tailscale leader and worker setup</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Site navigation">
+          <a href="index.html" aria-current="page">Overview</a>
+          <a href="leader.html">Leader</a>
+          <a href="worker.html">Worker</a>
+          <a href="https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference">GitHub</a>
+        </nav>
       </header>
 
       <section class="hero" aria-labelledby="page-title">
-        <h1 id="page-title">Run the cluster.</h1>
-        <p class="lede">
-          Start the leader on the Mac first, then run the command block for each
-          worker operating system. Worker setup stages downloads in a temporary
-          folder and keeps the reusable runtime environment for future runs.
-        </p>
-      </section>
-
-      <section class="leader-command" aria-label="Leader command">
-        <h2 class="section-title">Leader</h2>
-        <article class="panel wide compact">
-          <div class="panel-head">
-            <h2>Leader Mac</h2>
-            <span class="shell">Terminal</span>
-          </div>
-          <pre><code>cd /Users/ruturaj_vasant/Desktop/Academic/DS_Project
-source .venv/bin/activate
-
-./installations/leader_macos.sh \
-  --host 0.0.0.0 \
-  --mode distributed \
-  --distributed-dataset tiny-imagenet-200 \
-  --distributed-model resnet101 \
-  --distributed-image-size 224 \
-  --distributed-eval-batches 10 \
-  --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
-  --dist-port 29501</code></pre>
-          <p class="panel-note">
-            In the leader terminal, use <code>workers</code> to see joined
-            workers, <code>start 5</code> to run 5 epochs, or
-            <code>start epochs=5 batches=100 lr=0.03</code> for a federated run.
+        <div>
+          <p class="eyebrow">Cluster setup</p>
+          <h1 id="page-title">Start the leader. Join workers. Run experiments.</h1>
+          <p class="lede">
+            Use the leader page on the Mac that coordinates training. Use the
+            worker page on every laptop that should contribute compute.
           </p>
+        </div>
+        <aside class="status" aria-label="Default cluster settings">
+          <h2>Default Connection</h2>
+          <dl>
+            <dt>Leader DNS</dt>
+            <dd><code>leader-macbook-pro.taila5426e.ts.net</code></dd>
+            <dt>Control port</dt>
+            <dd><code>8787</code></dd>
+            <dt>Dist port</dt>
+            <dd><code>29501</code></dd>
+          </dl>
+        </aside>
+      </section>
+
+      <section class="grid" aria-label="Setup paths">
+        <article class="card">
+          <h2>Leader Setup</h2>
+          <p>
+            Install the project on the coordinator Mac, start federated or
+            distributed training, and run the experiment matrix.
+          </p>
+          <a class="action" href="leader.html">Open leader commands</a>
+        </article>
+        <article class="card">
+          <h2>Worker Setup</h2>
+          <p>
+            Install the worker runtime on macOS or Windows, connect to the
+            leader, and keep the node listening for training jobs.
+          </p>
+          <a class="action" href="worker.html">Open worker commands</a>
         </article>
       </section>
 
-      <section class="commands" aria-label="Worker setup commands">
-        <h2 class="section-title">Workers</h2>
-        <article class="panel">
-          <div class="panel-head">
-            <h2>macOS</h2>
-            <span class="shell">Terminal</span>
-          </div>
-          <pre><code>set -e
-work="$HOME/dml-worker"
-runtime="$work/Distributed_MachineLearning_Training_Inference-main"
-stage="$(mktemp -d)"
-cleanup() { [ -n "$stage" ] &amp;&amp; rm -rf "$stage"; }
-trap cleanup EXIT
-mkdir -p "$runtime" &amp;&amp; \
-curl -L "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -o "$stage/worker.zip" &amp;&amp; \
-unzip -q -o "$stage/worker.zip" -d "$stage" &amp;&amp; \
-rsync -a --delete --exclude ".venv/" --exclude ".data/" --exclude ".dml_worker_id" "$stage/Distributed_MachineLearning_Training_Inference-main/" "$runtime/" &amp;&amp; \
-cd "$runtime" &amp;&amp; \
-chmod +x installations/bootstrap_macos.sh &amp;&amp; \
-./installations/bootstrap_macos.sh</code></pre>
-        </article>
-
-        <article class="panel">
-          <div class="panel-head">
-            <h2>Windows</h2>
-            <span class="shell">PowerShell</span>
-          </div>
-          <pre><code>$work = Join-Path $HOME "dml-worker"
-$runtime = Join-Path $work "Distributed_MachineLearning_Training_Inference-main"
-$stage = Join-Path ([IO.Path]::GetTempPath()) ("dml-worker-install-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $runtime, $stage | Out-Null
-try {
-  Invoke-WebRequest -Uri "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_Inference/archive/refs/heads/main.zip" -OutFile (Join-Path $stage "worker.zip")
-  Expand-Archive -Path (Join-Path $stage "worker.zip") -DestinationPath $stage -Force
-  $source = Join-Path $stage "Distributed_MachineLearning_Training_Inference-main"
-  Get-ChildItem -Force $runtime | Where-Object { @(".venv", ".data", ".dml_worker_id") -notcontains $_.Name } | Remove-Item -Recurse -Force
-  Get-ChildItem -Force $source | Copy-Item -Destination $runtime -Recurse -Force
-  Set-Location $runtime
-  powershell -ExecutionPolicy Bypass -File .\installations\bootstrap_windows.ps1
-} finally {
-  Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
-}</code></pre>
-        </article>
-      </section>
-
-      <section class="footer-note" aria-label="Connection details">
-        <p>
-          Default leader:
-          <span class="accent">leader-macbook-pro.taila5426e.ts.net:8787</span>
-        </p>
-        <p>
-          For a different leader, set <code>LEADER_HOST</code> and
-          <code>LEADER_PORT</code> before running the final bootstrap command.
-        </p>
+      <section class="section" aria-label="Recommended order">
+        <div class="section-head">
+          <h2 class="section-title">Recommended Order</h2>
+          <p class="section-note">
+            The leader can run alone for baselines. For multi-node runs, start
+            the worker first, then start the leader experiment.
+          </p>
+        </div>
+        <div class="grid three">
+          <article class="card">
+            <h2>1. Leader</h2>
+            <p>Start the leader on the Mac that workers can reach over Tailscale.</p>
+          </article>
+          <article class="card">
+            <h2>2. Worker</h2>
+            <p>Run the worker bootstrap once on each compute machine.</p>
+          </article>
+          <article class="card">
+            <h2>3. Matrix</h2>
+            <p>Run the standard experiments and collect CSV, TXT, and PNG outputs from <code>runs/</code>.</p>
+          </article>
+        </div>
       </section>
     </main>
   </body>
