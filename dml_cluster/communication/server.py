@@ -18,7 +18,7 @@ async def close_writer(
             await send_message(writer, final_message)
     writer.close()
     with contextlib.suppress(Exception):
-        await writer.wait_closed()
+        await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
 
 
 def format_peer(peer: object) -> str:

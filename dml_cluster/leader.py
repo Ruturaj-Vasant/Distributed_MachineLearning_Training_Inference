@@ -170,7 +170,8 @@ class Leader:
         )
         sockets = ", ".join(str(sock.getsockname()) for sock in (self._server.sockets or []))
         print(f"[leader] listening on {sockets}; mode={self.training_mode}")
-        self.print_help()
+        if not (self.auto_start and self.exit_after_run):
+            self.print_help()
 
         tasks = [
             asyncio.create_task(self._monitor_heartbeats(), name="heartbeat-monitor"),
@@ -182,6 +183,7 @@ class Leader:
         try:
             await self._stop.wait()
         finally:
+            self._server.close()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -189,7 +191,6 @@ class Leader:
                 self._training_task.cancel()
                 await asyncio.gather(self._training_task, return_exceptions=True)
             await self._close_all_workers()
-            self._server.close()
             await self._server.wait_closed()
 
     async def handle_client(
@@ -208,6 +209,9 @@ class Leader:
             worker_id = str(hello.get("worker_id") or "").strip()
             if not worker_id:
                 await send_message(writer, {"type": "reject", "reason": "hello missing worker_id"})
+                return
+            if self._stop.is_set():
+                await send_message(writer, {"type": "reject", "reason": "leader shutting down"})
                 return
 
             async with self._lock:
@@ -873,7 +877,6 @@ class Leader:
         print("                   federated: override epochs, batches, lr for one run")
         print("  help             show this command list")
         print("  quit             stop the leader cleanly")
-        print("[leader] select training mode at startup with --mode federated|distributed")
 
     def _print_and_save_federated_summary(
         self,

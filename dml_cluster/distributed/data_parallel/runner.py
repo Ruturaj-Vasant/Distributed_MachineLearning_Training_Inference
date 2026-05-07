@@ -335,9 +335,14 @@ def run_training(
 
     gloo_ifname = configure_gloo_socket_ifname(master_addr)
     if gloo_ifname:
-        print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}")
+        print(f"[distributed] rank {rank} using GLOO_SOCKET_IFNAME={gloo_ifname}", flush=True)
 
     try:
+        print(
+            f"[distributed] rank {rank} initializing process group "
+            f"{master_addr}:{dist_port} world_size={world_size}",
+            flush=True,
+        )
         dist.init_process_group(
             backend="gloo",
             init_method=f"tcp://{master_addr}:{dist_port}",
@@ -345,6 +350,7 @@ def run_training(
             rank=rank,
             timeout=timeout,
         )
+        print(f"[distributed] rank {rank} process group ready", flush=True)
     except Exception as exc:
         result_q.put(
             {
@@ -371,7 +377,9 @@ def run_training(
             else None
         )
 
+        print(f"[distributed] rank {rank} broadcasting model", flush=True)
         _broadcast_model(model, device)
+        print(f"[distributed] rank {rank} model broadcast complete", flush=True)
         dist.barrier()
 
         run_started = time.monotonic()
