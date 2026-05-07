@@ -291,9 +291,13 @@
           <pre><code>cd /Users/ruturaj_vasant/Desktop/Academic/DS_Project
 source .venv/bin/activate
 
-./leader_macos.sh \
+./installations/leader_macos.sh \
   --host 0.0.0.0 \
   --mode distributed \
+  --distributed-dataset tiny-imagenet-200 \
+  --distributed-model resnet101 \
+  --distributed-image-size 224 \
+  --distributed-eval-batches 10 \
   --dist-master-addr leader-macbook-pro.taila5426e.ts.net \
   --dist-port 29501</code></pre>
           <p class="panel-note">
@@ -322,8 +326,8 @@ curl -L "https://github.com/Ruturaj-Vasant/Distributed_MachineLearning_Training_
 unzip -q -o "$stage/worker.zip" -d "$stage" &amp;&amp; \
 rsync -a --delete --exclude ".venv/" --exclude ".data/" --exclude ".dml_worker_id" "$stage/Distributed_MachineLearning_Training_Inference-main/" "$runtime/" &amp;&amp; \
 cd "$runtime" &amp;&amp; \
-chmod +x bootstrap_macos.sh &amp;&amp; \
-./bootstrap_macos.sh</code></pre>
+chmod +x installations/bootstrap_macos.sh &amp;&amp; \
+./installations/bootstrap_macos.sh</code></pre>
         </article>
 
         <article class="panel">
@@ -342,7 +346,7 @@ try {
   Get-ChildItem -Force $runtime | Where-Object { @(".venv", ".data", ".dml_worker_id") -notcontains $_.Name } | Remove-Item -Recurse -Force
   Get-ChildItem -Force $source | Copy-Item -Destination $runtime -Recurse -Force
   Set-Location $runtime
-  powershell -ExecutionPolicy Bypass -File .\bootstrap_windows.ps1
+  powershell -ExecutionPolicy Bypass -File .\installations\bootstrap_windows.ps1
 } finally {
   Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 }</code></pre>

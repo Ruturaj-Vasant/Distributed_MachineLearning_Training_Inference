@@ -3,7 +3,8 @@ set -euo pipefail
 
 LEADER_HOST="${LEADER_HOST:-leader-macbook-pro.taila5426e.ts.net}"
 LEADER_PORT="${LEADER_PORT:-8787}"
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
 export PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 
@@ -176,7 +177,7 @@ ensure_torch() {
     return
   fi
   log "Installing PyTorch build selected for this machine"
-  "${VENV_DIR}/bin/python" -m dml_cluster.torch_install --install
+  "${VENV_DIR}/bin/python" -m dml_cluster.system.torch_install --install
 }
 
 main() {
@@ -190,7 +191,7 @@ main() {
   ensure_venv
 
   log "Detected hardware:"
-  "${VENV_DIR}/bin/python" -m dml_cluster.hardware
+  "${VENV_DIR}/bin/python" -m dml_cluster.system.hardware
   log "Starting worker inside virtual environment"
   exec "${VENV_DIR}/bin/python" -m dml_cluster.worker \
     --leader "${LEADER_HOST}" \

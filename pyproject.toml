@@ -7,7 +7,7 @@ name = "tailscale-dml"
 version = "0.1.0"
 description = "Minimal Tailscale-connected distributed ML training skeleton"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "matplotlib>=3.8", "pandas>=2.0"]
 
 [tool.setuptools.packages.find]
 include = ["dml_cluster*"]

@@ -3,23 +3,34 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import csv
 import datetime as dt
-import pickle
+import json
 import queue
 import shutil
 import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .protocol import PROTOCOL_LIMIT, ProtocolError, read_message, send_binary, send_message
+from .communication.protocol import PROTOCOL_LIMIT, ProtocolError, read_message, send_message
+from .communication.server import close_writer, format_peer
+from .distributed.common.optimization import OPTIMIZATION_CHOICES, resolve_optimizations
+from .distributed.data_parallel.leader_session import (
+    drain_local_distributed_results,
+    drain_worker_distributed_results,
+    handle_worker_distributed_result,
+    run_distributed_training,
+    send_distributed_shards,
+    wait_for_worker_distributed_completion,
+)
+from .distributed.pipeline_parallel.leader_session import run_pipeline_training
+from .distributed.pipeline_parallel.runner import PipelineParallelNotImplementedError
+from .distributed.reporting import metric_bars, print_and_save_run_summary
+from .federated.leader_session import run_federated_training
 
 DEFAULT_PORT = 8787
 DEFAULT_HEARTBEAT_INTERVAL = 5.0
@@ -58,36 +69,6 @@ class FederatedRunConfig:
     eval_batches: int
 
 
-def _format_table(headers: list[str], rows: list[list[str]]) -> list[str]:
-    widths = [len(header) for header in headers]
-    for row in rows:
-        widths = [max(width, len(cell)) for width, cell in zip(widths, row)]
-    lines = [
-        "  ".join(text.ljust(width) for text, width in zip(headers, widths)),
-        "  ".join("-" * width for width in widths),
-    ]
-    lines.extend("  ".join(text.ljust(width) for text, width in zip(row, widths)) for row in rows)
-    return lines
-
-
-def _metric_bars(
-    title: str,
-    values: list[tuple[int, float, str]],
-    width: int = 32,
-    scale_max: float | None = None,
-) -> list[str]:
-    if not values:
-        return []
-    maximum = scale_max if scale_max is not None else max(value for _, value, _ in values)
-    maximum = max(maximum, 1e-12)
-    lines = [title]
-    for epoch, value, label in values:
-        filled = max(1, int(round((value / maximum) * width))) if value > 0 else 0
-        bar = "#" * min(width, filled)
-        lines.append(f"{epoch:>3} | {bar.ljust(width)} {label}")
-    return lines
-
-
 class Leader:
     def __init__(
         self,
@@ -110,6 +91,27 @@ class Leader:
         distributed_batches_per_epoch: int,
         distributed_samples: int,
         distributed_timeout: float,
+        distributed_dataset: str,
+        distributed_model: str,
+        distributed_image_size: int,
+        distributed_download: bool,
+        distributed_amp: bool,
+        distributed_eval_batches: int,
+        distributed_parallel: str,
+        distributed_pipeline_stages: int,
+        distributed_microbatch_size: int,
+        distributed_baseline_seconds: float,
+        distributed_optimizations: str,
+        distributed_compression: str,
+        distributed_compress_ratio: float,
+        distributed_straggler_rank: int,
+        distributed_straggler_delay: float,
+        distributed_leader_only: bool,
+        auto_start: bool,
+        exit_after_run: bool,
+        required_workers: int,
+        start_delay_seconds: float,
+        auto_start_timeout: float,
     ) -> None:
         self.host = host
         self.port = port
@@ -130,6 +132,27 @@ class Leader:
         self.distributed_batches_per_epoch = distributed_batches_per_epoch
         self.distributed_samples = distributed_samples
         self.distributed_timeout = distributed_timeout
+        self.distributed_dataset = distributed_dataset
+        self.distributed_model = distributed_model
+        self.distributed_image_size = distributed_image_size
+        self.distributed_download = distributed_download
+        self.distributed_amp = distributed_amp
+        self.distributed_eval_batches = distributed_eval_batches
+        self.distributed_parallel = distributed_parallel
+        self.distributed_pipeline_stages = distributed_pipeline_stages
+        self.distributed_microbatch_size = distributed_microbatch_size
+        self.distributed_baseline_seconds = distributed_baseline_seconds
+        self.distributed_optimizations = distributed_optimizations
+        self.distributed_compression = distributed_compression
+        self.distributed_compress_ratio = distributed_compress_ratio
+        self.distributed_straggler_rank = distributed_straggler_rank
+        self.distributed_straggler_delay = distributed_straggler_delay
+        self.distributed_leader_only = distributed_leader_only
+        self.auto_start = auto_start
+        self.exit_after_run = exit_after_run
+        self.required_workers = required_workers
+        self.start_delay_seconds = start_delay_seconds
+        self.auto_start_timeout = auto_start_timeout
         self.workers: dict[str, WorkerState] = {}
         self._result_waiters: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         self._distributed_waiters: dict[str, asyncio.Queue[dict[str, Any]]] = {}
@@ -153,6 +176,8 @@ class Leader:
             asyncio.create_task(self._monitor_heartbeats(), name="heartbeat-monitor"),
             asyncio.create_task(self._command_loop(), name="command-loop"),
         ]
+        if self.auto_start:
+            tasks.append(asyncio.create_task(self._auto_start_loop(), name="auto-start"))
         try:
             await self._stop.wait()
         finally:
@@ -171,7 +196,7 @@ class Leader:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        peer = _format_peer(writer.get_extra_info("peername"))
+        peer = format_peer(writer.get_extra_info("peername"))
         worker_id = ""
         try:
             hello = await asyncio.wait_for(read_message(reader), timeout=15)
@@ -199,7 +224,7 @@ class Leader:
 
                 previous = self.workers.get(worker_id)
                 if previous is not None:
-                    await _close_writer(previous.writer, {"type": "shutdown", "reason": "worker reconnected"})
+                    await close_writer(previous.writer, {"type": "shutdown", "reason": "worker reconnected"})
 
                 now = time.monotonic()
                 hardware = hello.get("hardware") if isinstance(hello.get("hardware"), dict) else {}
@@ -320,6 +345,52 @@ class Leader:
             elif command:
                 print(f"[leader] unknown command: {command}")
 
+    async def _auto_start_loop(self) -> None:
+        try:
+            await self._wait_for_required_workers()
+            if self.start_delay_seconds > 0:
+                print(f"[leader] auto-start waiting {self.start_delay_seconds:.1f}s before start")
+                await asyncio.sleep(self.start_delay_seconds)
+            config = FederatedRunConfig(
+                epochs=self.epochs,
+                train_batches_per_epoch=self.train_batches_per_epoch,
+                batch_size=self.batch_size,
+                lr=self.lr,
+                eval_batches=self.eval_batches,
+            )
+            print(f"[leader] auto-start launching training for {config.epochs} epoch(s)")
+            await self._start_training(config)
+            if self._training_task is not None:
+                await self._training_task
+            if self.exit_after_run:
+                print("[leader] auto-start run complete; exiting")
+                self._stop.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[leader] auto-start failed: {exc}")
+            if self.exit_after_run:
+                self._stop.set()
+
+    async def _wait_for_required_workers(self) -> None:
+        deadline = time.monotonic() + max(0.0, self.auto_start_timeout)
+        while True:
+            async with self._lock:
+                worker_count = len(self.workers)
+            if worker_count >= self.required_workers:
+                if self.required_workers > 0:
+                    print(
+                        f"[leader] auto-start requirement met: "
+                        f"{worker_count}/{self.required_workers} worker(s)"
+                    )
+                return
+            if self.auto_start_timeout > 0 and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "timed out waiting for required workers: "
+                    f"{worker_count}/{self.required_workers}"
+                )
+            await asyncio.sleep(0.5)
+
     def _parse_start_config(self, parts: list[str]) -> FederatedRunConfig:
         config = FederatedRunConfig(
             epochs=self.epochs,
@@ -424,6 +495,7 @@ class Leader:
             return
         if worker_count == 0:
             print("[leader] no workers connected; running distributed leader-only smoke path")
+        self._print_distributed_run_config(worker_count)
         target = (
             self._run_distributed_training(config.epochs)
             if self.training_mode == "distributed"
@@ -434,280 +506,42 @@ class Leader:
             name="training-run",
         )
 
-    async def _run_federated_training(self, config: FederatedRunConfig) -> None:
-        from .training import average_state_payloads, evaluate_payload, initial_model_payload
-
-        run_id = uuid.uuid4().hex[:12]
-        model_state = initial_model_payload()
-        run_rows: list[dict[str, Any]] = []
+    def _print_distributed_run_config(self, worker_count: int) -> None:
+        if self.training_mode != "distributed":
+            return
         print(
-            f"[leader] training run {run_id} started: "
-            f"epochs={config.epochs}, batches/epoch={config.train_batches_per_epoch}, "
-            f"batch_size={config.batch_size}, lr={config.lr}"
+            "[leader] distributed config: "
+            f"parallel={self.distributed_parallel}, "
+            f"workers={worker_count}, "
+            f"leader_only={self.distributed_leader_only}, "
+            f"optimizations={self.distributed_optimizations}, "
+            f"compression={self.distributed_compression}, "
+            f"compress_ratio={self.distributed_compress_ratio}, "
+            f"straggler_rank={self.distributed_straggler_rank}, "
+            f"straggler_delay={self.distributed_straggler_delay:.3f}s"
         )
 
-        for epoch in range(1, config.epochs + 1):
-            epoch_started = time.monotonic()
-            async with self._lock:
-                workers = list(self.workers.values())
-
-            if not workers:
-                print(f"[leader] epoch {epoch}: no workers connected; stopping training")
-                break
-
-            assignments = self._allocate_batches(workers, config.train_batches_per_epoch, run_id, epoch)
-            self._print_allocation(epoch, assignments)
-            results = await self._run_epoch(run_id, epoch, model_state, assignments, config)
-            if not results:
-                print(f"[leader] epoch {epoch}: no successful worker results; stopping training")
-                break
-
-            model_state = await asyncio.to_thread(average_state_payloads, results)
-            train_samples = sum(int(result["samples"]) for result in results)
-            train_loss = sum(
-                float(result["loss"]) * int(result["samples"]) for result in results
-            ) / max(1, train_samples)
-            metrics = await asyncio.to_thread(
-                evaluate_payload,
-                model_state,
-                self.project_dir,
-                config.batch_size,
-                config.eval_batches,
-            )
-            print(
-                f"[leader] epoch {epoch}/{config.epochs} "
-                f"train_loss={train_loss:.4f} "
-                f"val_loss={float(metrics['loss']):.4f} "
-                f"val_acc={float(metrics['accuracy']) * 100:.2f}% "
-                f"samples={train_samples}"
-            )
-            run_rows.append(
-                {
-                    "epoch": epoch,
-                    "workers": len({str(result["worker_id"]) for result in results}),
-                    "samples": train_samples,
-                    "train_loss": train_loss,
-                    "val_loss": float(metrics["loss"]),
-                    "val_acc": float(metrics["accuracy"]),
-                    "duration_seconds": time.monotonic() - epoch_started,
-                }
-            )
-
-        if run_rows:
-            self._print_and_save_federated_summary(run_id, run_rows)
-        status = "complete" if len(run_rows) == config.epochs else "ended"
-        print(f"[leader] training run {run_id} {status}")
+    async def _run_federated_training(self, config: FederatedRunConfig) -> None:
+        await run_federated_training(self, config)
 
     async def _run_distributed_training(self, epochs: int) -> None:
-        from .distributed_data import (
-            compute_weighted_slices,
-            load_cifar10_arrays,
-            score_batch_multipliers,
-        )
-        from .distributed_training import run_training
-        from .hardware import detect_hardware
-
-        run_id = uuid.uuid4().hex[:12]
-        leader_hardware = await asyncio.to_thread(detect_hardware)
-        async with self._lock:
-            workers = list(self.workers.values())
-
-        participant_scores = {"__leader__": leader_hardware.benchmark_score}
-        participant_scores.update(
-            {worker.worker_id: worker.benchmark_score for worker in workers}
-        )
-        rank_map = {"__leader__": 0}
-        for index, worker in enumerate(workers, start=1):
-            rank_map[worker.worker_id] = index
-
-        print(
-            f"[leader] distributed run {run_id} loading CIFAR-10 "
-            f"(samples={self.distributed_samples or 'all'})"
-        )
-        images, labels = await asyncio.to_thread(
-            load_cifar10_arrays,
-            self.project_dir,
-            self.distributed_samples,
-        )
-        if len(images) < len(participant_scores):
-            print(
-                "[leader] distributed training needs at least one sample per participant; "
-                f"got {len(images)} sample(s) for {len(participant_scores)} participant(s)"
-            )
+        if self.distributed_parallel == "pipeline":
+            try:
+                await run_pipeline_training(self, epochs)
+            except (PipelineParallelNotImplementedError, ValueError) as exc:
+                print(f"[leader] {exc}")
             return
-        slices = compute_weighted_slices(participant_scores, len(images))
-        multipliers = score_batch_multipliers(participant_scores)
-        batch_sizes: dict[str, int] = {}
-        for participant, (start, stop) in slices.items():
-            sample_count = max(1, stop - start)
-            requested_batch = max(1, self.distributed_base_batch * multipliers[participant])
-            batch_sizes[participant] = min(requested_batch, sample_count)
-
-        batches_available = {
-            participant: max(1, (stop - start) // batch_sizes[participant])
-            for participant, (start, stop) in slices.items()
-        }
-        batches_per_epoch = max(
-            1,
-            min(self.distributed_batches_per_epoch, min(batches_available.values())),
-        )
-        world_size = len(rank_map)
-        master_addr = self._distributed_master_addr()
-        print(
-            f"[leader] distributed run {run_id}: world_size={world_size}, "
-            f"master={master_addr}:{self.dist_port}, batches/epoch={batches_per_epoch}"
-        )
-
-        distributed_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        run_rows: list[dict[str, Any]] = []
-        self._distributed_waiters[run_id] = distributed_q
-        try:
-            if not await self._send_distributed_shards(
-                run_id=run_id,
-                workers=workers,
-                images=images,
-                labels=labels,
-                slices=slices,
-            ):
-                return
-
-            for worker in workers:
-                await send_message(
-                    worker.writer,
-                    {
-                        "type": "distributed_train_start",
-                        "run_id": run_id,
-                        "rank": rank_map[worker.worker_id],
-                        "world_size": world_size,
-                        "master_addr": master_addr,
-                        "dist_port": self.dist_port,
-                        "batch_size": batch_sizes[worker.worker_id],
-                        "batches_per_epoch": batches_per_epoch,
-                        "epochs": epochs,
-                        "timeout_seconds": self.distributed_timeout,
-                    },
-                )
-
-            leader_start, leader_stop = slices["__leader__"]
-            leader_shard = (images[leader_start:leader_stop], labels[leader_start:leader_stop])
-            result_q: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
-            stop_event = threading.Event()
-            leader_task = asyncio.create_task(
-                asyncio.to_thread(
-                    run_training,
-                    0,
-                    world_size,
-                    master_addr,
-                    self.dist_port,
-                    leader_shard,
-                    leader_hardware.accelerator,
-                    batch_sizes["__leader__"],
-                    batches_per_epoch,
-                    epochs,
-                    result_q,
-                    stop_event,
-                    self.distributed_timeout,
-                ),
-                name="distributed-rank0",
-            )
-
-            active_worker_ids = {worker.worker_id for worker in workers}
-            completed_worker_ids: set[str] = set()
-            while not leader_task.done():
-                if not self._drain_local_distributed_results(result_q, run_rows, world_size):
-                    stop_event.set()
-                if not await self._drain_worker_distributed_results(
-                    distributed_q,
-                    completed_worker_ids,
-                ):
-                    stop_event.set()
-                async with self._lock:
-                    live_worker_ids = set(self.workers)
-                lost = active_worker_ids - live_worker_ids
-                if lost and not stop_event.is_set():
-                    print(
-                        "[leader] distributed worker lost mid-run; "
-                        f"waiting for process-group timeout: {', '.join(sorted(lost))}"
-                    )
-                    stop_event.set()
-                await asyncio.sleep(0.25)
-
-            await leader_task
-            self._drain_local_distributed_results(result_q, run_rows, world_size)
-            await self._wait_for_worker_distributed_completion(
-                distributed_q,
-                active_worker_ids,
-                completed_worker_ids,
-            )
-            if run_rows:
-                self._print_and_save_distributed_summary(run_id, run_rows)
-            print(f"[leader] distributed run {run_id} finished")
-        finally:
-            self._distributed_waiters.pop(run_id, None)
+        await run_distributed_training(self, epochs)
 
     async def _send_distributed_shards(
         self,
         run_id: str,
         workers: list[WorkerState],
-        images: Any,
-        labels: Any,
         slices: dict[str, tuple[int, int]],
+        dataset_samples: int,
+        classes: int,
     ) -> bool:
-        if not workers:
-            return True
-
-        pending = {worker.worker_id for worker in workers}
-        for worker in workers:
-            start, stop = slices[worker.worker_id]
-            payload = pickle.dumps(
-                (images[start:stop], labels[start:stop]),
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
-            print(
-                f"[leader] sending shard to {worker.hostname}: "
-                f"{stop - start:,} sample(s), {len(payload) / 1024 / 1024:.1f} MiB"
-            )
-            try:
-                await send_message(
-                    worker.writer,
-                    {
-                        "type": "distributed_shard",
-                        "run_id": run_id,
-                        "samples": stop - start,
-                        "bytes": len(payload),
-                    },
-                )
-                await send_binary(worker.writer, payload)
-            except Exception as exc:
-                print(f"[leader] failed to send shard to {worker.worker_id}: {exc}")
-                return False
-
-        waiter = self._distributed_waiters[run_id]
-        deadline = time.monotonic() + self.distributed_timeout
-        while pending:
-            timeout = max(0.1, deadline - time.monotonic())
-            try:
-                message = await asyncio.wait_for(waiter.get(), timeout=timeout)
-            except asyncio.TimeoutError:
-                print(
-                    "[leader] timed out waiting for shard confirmations from "
-                    f"{', '.join(sorted(pending))}"
-                )
-                return False
-
-            message_type = message.get("type")
-            worker_id = str(message.get("worker_id") or "")
-            if message_type == "distributed_shard_ready" and worker_id in pending:
-                pending.remove(worker_id)
-                print(f"[leader] shard confirmed by {worker_id[:8]}")
-            elif message_type == "distributed_error":
-                print(
-                    f"[leader] worker {worker_id[:8]} reported distributed error: "
-                    f"{message.get('error')}"
-                )
-                return False
-
-        return True
+        return await send_distributed_shards(self, run_id, workers, slices, dataset_samples, classes)
 
     def _drain_local_distributed_results(
         self,
@@ -715,53 +549,14 @@ class Leader:
         run_rows: list[dict[str, Any]] | None = None,
         world_size: int = 0,
     ) -> bool:
-        ok = True
-        while True:
-            try:
-                item = result_q.get_nowait()
-            except queue.Empty:
-                return ok
-
-            if item.get("type") == "distributed_epoch":
-                print(
-                    f"[leader] distributed epoch {item['epoch']}: "
-                    f"loss={float(item['loss']):.4f}, "
-                    f"batches={int(item['batches'])}, device={item['device']}"
-                )
-                if run_rows is not None:
-                    run_rows.append(
-                        {
-                            "epoch": int(item["epoch"]),
-                            "world_size": world_size,
-                            "loss": float(item["loss"]),
-                            "batches": int(item["batches"]),
-                            "duration_seconds": float(item.get("duration_seconds") or 0.0),
-                        }
-                    )
-            elif item.get("type") == "distributed_error":
-                ok = False
-                print(
-                    f"[leader] distributed rank 0 failed at epoch {item.get('epoch')}: "
-                    f"{item.get('error')}"
-                )
-            elif item.get("type") == "distributed_complete":
-                print("[leader] distributed rank 0 complete")
-        return ok
+        return drain_local_distributed_results(result_q, run_rows, world_size)
 
     async def _drain_worker_distributed_results(
         self,
         distributed_q: asyncio.Queue[dict[str, Any]],
         completed_worker_ids: set[str] | None = None,
     ) -> bool:
-        ok = True
-        while True:
-            try:
-                message = distributed_q.get_nowait()
-            except asyncio.QueueEmpty:
-                return ok
-
-            ok = self._handle_worker_distributed_result(message, completed_worker_ids) and ok
-        return ok
+        return await drain_worker_distributed_results(distributed_q, completed_worker_ids)
 
     async def _wait_for_worker_distributed_completion(
         self,
@@ -769,60 +564,19 @@ class Leader:
         active_worker_ids: set[str],
         completed_worker_ids: set[str],
     ) -> bool:
-        if not active_worker_ids:
-            return True
-
-        ok = True
-        deadline = time.monotonic() + min(10.0, max(1.0, self.distributed_timeout))
-        while completed_worker_ids != active_worker_ids and time.monotonic() < deadline:
-            if not await self._drain_worker_distributed_results(
-                distributed_q,
-                completed_worker_ids,
-            ):
-                ok = False
-            if completed_worker_ids == active_worker_ids:
-                return ok
-            timeout = max(0.1, min(0.5, deadline - time.monotonic()))
-            try:
-                message = await asyncio.wait_for(distributed_q.get(), timeout=timeout)
-            except asyncio.TimeoutError:
-                continue
-            ok = self._handle_worker_distributed_result(message, completed_worker_ids) and ok
-
-        pending = active_worker_ids - completed_worker_ids
-        if pending:
-            print(
-                "[leader] distributed run ended before completion messages from "
-                f"{', '.join(worker_id[:8] for worker_id in sorted(pending))}"
-            )
-        return ok
+        return await wait_for_worker_distributed_completion(
+            distributed_q,
+            active_worker_ids,
+            completed_worker_ids,
+            self.distributed_timeout,
+        )
 
     def _handle_worker_distributed_result(
         self,
         message: dict[str, Any],
         completed_worker_ids: set[str] | None,
     ) -> bool:
-        message_type = message.get("type")
-        worker_id = str(message.get("worker_id") or "")
-        if message_type == "distributed_epoch":
-            print(
-                f"[leader] worker {worker_id[:8]} epoch {message.get('epoch')}: "
-                f"loss={float(message.get('loss') or 0.0):.4f}, "
-                f"device={message.get('device')}"
-            )
-            return True
-        if message_type == "distributed_error":
-            print(
-                f"[leader] worker {worker_id[:8]} distributed error: "
-                f"{message.get('error')}"
-            )
-            return False
-        if message_type == "distributed_complete":
-            if completed_worker_ids is not None:
-                completed_worker_ids.add(worker_id)
-            print(f"[leader] worker {worker_id[:8]} distributed complete")
-            return True
-        return True
+        return handle_worker_distributed_result(message, completed_worker_ids)
 
     def _distributed_master_addr(self) -> str:
         if self.dist_master_addr:
@@ -1061,7 +815,7 @@ class Leader:
 
     async def _remove_worker(self, worker_id: str, writer: asyncio.StreamWriter) -> None:
         if not worker_id:
-            await _close_writer(writer)
+            await close_writer(writer)
             return
         removed = False
         async with self._lock:
@@ -1069,7 +823,7 @@ class Leader:
             if existing is not None and existing.writer is writer:
                 self.workers.pop(worker_id, None)
                 removed = True
-        await _close_writer(writer)
+        await close_writer(writer)
         if removed:
             print(f"[leader] removed {worker_id}")
             self.print_workers()
@@ -1079,7 +833,7 @@ class Leader:
             workers = list(self.workers.values())
             self.workers.clear()
         for worker in workers:
-            await _close_writer(worker.writer, {"type": "shutdown", "reason": "leader shutting down"})
+            await close_writer(worker.writer, {"type": "shutdown", "reason": "leader shutting down"})
 
     def print_workers(self) -> None:
         rows = []
@@ -1140,7 +894,7 @@ class Leader:
         ]
         graph_lines = []
         graph_lines.extend(
-            _metric_bars(
+            metric_bars(
                 "train_loss",
                 [
                     (int(row["epoch"]), float(row["train_loss"]), f"{float(row['train_loss']):.4f}")
@@ -1149,7 +903,7 @@ class Leader:
             )
         )
         graph_lines.extend(
-            _metric_bars(
+            metric_bars(
                 "val_acc",
                 [
                     (
@@ -1188,29 +942,133 @@ class Leader:
         run_id: str,
         rows: list[dict[str, Any]],
     ) -> None:
-        headers = ["epoch", "world", "batches", "loss", "duration"]
+        self._apply_distributed_baseline(rows)
+        headers = [
+            "epoch",
+            "world",
+            "samples/s",
+            "speedup",
+            "eff",
+            "batches",
+            "loss",
+            "val_acc",
+            "compression",
+            "sec/batch",
+            "duration",
+        ]
         table_rows = [
             [
                 str(row["epoch"]),
                 str(row["world_size"]),
+                f"{float(row.get('throughput') or row.get('samples_per_second') or 0.0):.2f}",
+                f"{float(row.get('speedup') or 1.0):.2f}x",
+                f"{float(row.get('efficiency') or 0.0) * 100:.1f}%",
                 str(row["batches"]),
                 f"{float(row['loss']):.4f}",
+                f"{float(row.get('val_acc') or 0.0) * 100:.2f}%",
+                self._distributed_compression_label(row),
+                f"{float(row.get('seconds_per_batch') or 0.0):.3f}s",
                 f"{float(row['duration_seconds']):.1f}s",
             ]
             for row in rows
         ]
-        graph_lines = _metric_bars(
-            "loss",
-            [(int(row["epoch"]), float(row["loss"]), f"{float(row['loss']):.4f}") for row in rows],
+        graph_lines = []
+        graph_lines.extend(
+            metric_bars(
+                "loss",
+                [(int(row["epoch"]), float(row["loss"]), f"{float(row['loss']):.4f}") for row in rows],
+            )
         )
+        graph_lines.extend(
+            metric_bars(
+                "throughput",
+                [
+                    (
+                        int(row["epoch"]),
+                        float(row.get("throughput") or row.get("samples_per_second") or 0.0),
+                        f"{float(row.get('throughput') or row.get('samples_per_second') or 0.0):.2f} samples/s",
+                    )
+                    for row in rows
+                ],
+            )
+        )
+        graph_lines.extend(
+            metric_bars(
+                "val_acc",
+                [
+                    (
+                        int(row["epoch"]),
+                        float(row.get("val_acc") or 0.0),
+                        f"{float(row.get('val_acc') or 0.0) * 100:.2f}%",
+                    )
+                    for row in rows
+                ],
+                scale_max=1.0,
+            )
+        )
+        csv_fields = [
+            "epoch",
+            "hostname",
+            "device",
+            "world_size",
+            "participant_count",
+            "parallelism",
+            "optimizations",
+            "pipeline_stage",
+            "pipeline_stages",
+            "microbatch_size",
+            "model",
+            "dataset",
+            "classes",
+            "image_size",
+            "batch_size",
+            "epochs",
+            "batches_per_epoch",
+            "lr",
+            "momentum",
+            "weight_decay",
+            "dataset_samples",
+            "measured_batches",
+            "warmup_batches",
+            "samples",
+            "seconds",
+            "duration_seconds",
+            "total_seconds",
+            "samples_per_second",
+            "throughput",
+            "seconds_per_batch",
+            "speedup",
+            "efficiency",
+            "baseline_seconds",
+            "worker_score",
+            "worker_scores",
+            "estimated_epoch_seconds",
+            "estimated_100_epoch_hours",
+            "loss",
+            "cumulative_loss",
+            "final_batch_loss",
+            "val_loss",
+            "val_acc",
+            "val_top5_acc",
+            "val_samples",
+            "avg_power_watts",
+            "max_power_watts",
+            "energy_joules",
+            "power_source",
+            "amp",
+            "compression",
+            "compress_ratio",
+            "raw_gradient_numel",
+            "compressed_gradient_numel",
+            "compression_ratio",
+            "straggler_rank",
+            "straggler_delay_seconds",
+            "straggler_delay_total_seconds",
+            "worker_straggler_delay_total_seconds",
+            "metric_accuracy_source",
+        ]
         csv_rows = [
-            {
-                "epoch": row["epoch"],
-                "world_size": row["world_size"],
-                "batches": row["batches"],
-                "loss": f"{float(row['loss']):.6f}",
-                "duration_seconds": f"{float(row['duration_seconds']):.3f}",
-            }
+            {field: self._format_distributed_csv_value(row.get(field)) for field in csv_fields}
             for row in rows
         ]
         self._print_and_save_run_summary(
@@ -1222,6 +1080,84 @@ class Leader:
             csv_rows=csv_rows,
         )
 
+    def _apply_distributed_baseline(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        final = rows[-1]
+        world_size = int(final.get("world_size") or 1)
+        seconds = float(final.get("seconds") or final.get("total_seconds") or final.get("duration_seconds") or 0.0)
+        if seconds <= 0:
+            return
+
+        baseline_seconds = self.distributed_baseline_seconds or self._load_distributed_baseline_seconds(final)
+        if world_size <= 1:
+            self._save_distributed_baseline(final, seconds)
+            baseline_seconds = seconds
+
+        if baseline_seconds and baseline_seconds > 0:
+            speedup = baseline_seconds / seconds
+            efficiency = speedup / max(1, world_size)
+            for row in rows:
+                row["baseline_seconds"] = baseline_seconds
+                row["speedup"] = speedup
+                row["efficiency"] = efficiency
+
+    def _distributed_baseline_key(self, row: dict[str, Any]) -> str:
+        parts = [
+            str(row.get("dataset") or self.distributed_dataset),
+            str(row.get("model") or self.distributed_model),
+            f"img{int(row.get('image_size') or self.distributed_image_size)}",
+            f"batch{int(row.get('batch_size') or self.distributed_base_batch)}",
+            f"bpe{int(row.get('batches_per_epoch') or self.distributed_batches_per_epoch)}",
+            f"epochs{int(row.get('epochs') or self.epochs)}",
+        ]
+        return "-".join(part.replace("/", "-").replace("\\", "-") for part in parts)
+
+    def _distributed_baseline_path(self, row: dict[str, Any]) -> Path:
+        return self.project_dir / "runs" / "baselines" / f"{self._distributed_baseline_key(row)}.json"
+
+    def _load_distributed_baseline_seconds(self, row: dict[str, Any]) -> float:
+        path = self._distributed_baseline_path(row)
+        if not path.exists():
+            return 0.0
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return float(payload.get("seconds") or 0.0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return 0.0
+
+    def _save_distributed_baseline(self, row: dict[str, Any], seconds: float) -> None:
+        path = self._distributed_baseline_path(row)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "seconds": seconds,
+            "samples_per_second": float(row.get("samples_per_second") or row.get("throughput") or 0.0),
+            "dataset": row.get("dataset") or self.distributed_dataset,
+            "model": row.get("model") or self.distributed_model,
+            "image_size": int(row.get("image_size") or self.distributed_image_size),
+            "batch_size": int(row.get("batch_size") or self.distributed_base_batch),
+            "batches_per_epoch": int(row.get("batches_per_epoch") or self.distributed_batches_per_epoch),
+            "epochs": int(row.get("epochs") or self.epochs),
+            "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        }
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"[leader] saved solo baseline: {path}")
+
+    @staticmethod
+    def _distributed_compression_label(row: dict[str, Any]) -> str:
+        compression = str(row.get("compression") or "none")
+        if compression == "topk":
+            return f"topk {float(row.get('compression_ratio') or 1.0):.1f}x"
+        return "none"
+
+    @staticmethod
+    def _format_distributed_csv_value(value: Any) -> Any:
+        if isinstance(value, float):
+            return f"{value:.6f}"
+        if value is None:
+            return ""
+        return value
+
     def _print_and_save_run_summary(
         self,
         mode: str,
@@ -1231,58 +1167,15 @@ class Leader:
         graph_lines: list[str],
         csv_rows: list[dict[str, Any]],
     ) -> None:
-        table_lines = _format_table(headers, table_rows)
-        print("[leader] run summary")
-        for line in table_lines:
-            print(line)
-        if graph_lines:
-            print("[leader] run graph")
-            for line in graph_lines:
-                print(line)
-
-        runs_dir = self.project_dir / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        base = f"{mode}-{timestamp}-{run_id}"
-        csv_path = runs_dir / f"{base}.csv"
-        txt_path = runs_dir / f"{base}.txt"
-
-        with csv_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(csv_rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(csv_rows)
-
-        with txt_path.open("w", encoding="utf-8") as handle:
-            handle.write(f"{mode} run {run_id}\n")
-            handle.write("\n".join(table_lines))
-            handle.write("\n")
-            if graph_lines:
-                handle.write("\n")
-                handle.write("\n".join(graph_lines))
-                handle.write("\n")
-
-        print(f"[leader] saved run summary: {csv_path}")
-        print(f"[leader] saved run report: {txt_path}")
-
-
-async def _close_writer(
-    writer: asyncio.StreamWriter,
-    final_message: dict[str, Any] | None = None,
-) -> None:
-    if writer.is_closing():
-        return
-    with contextlib.suppress(Exception):
-        if final_message is not None:
-            await send_message(writer, final_message)
-    writer.close()
-    with contextlib.suppress(Exception):
-        await writer.wait_closed()
-
-
-def _format_peer(peer: object) -> str:
-    if isinstance(peer, tuple) and len(peer) >= 2:
-        return f"{peer[0]}:{peer[1]}"
-    return str(peer)
+        print_and_save_run_summary(
+            project_dir=self.project_dir,
+            mode=mode,
+            run_id=run_id,
+            headers=headers,
+            table_rows=table_rows,
+            graph_lines=graph_lines,
+            csv_rows=csv_rows,
+        )
 
 
 def _tailscale_ipv4() -> str:
@@ -1382,12 +1275,151 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=60.0,
         help="Seconds to wait for shard acknowledgements and torch.distributed collectives.",
     )
+    parser.add_argument(
+        "--distributed-dataset",
+        default="cifar10",
+        choices=("cifar10", "cifar100", "tiny-imagenet-200"),
+        help="Dataset for --mode distributed.",
+    )
+    parser.add_argument(
+        "--distributed-model",
+        default="cifar_cnn",
+        choices=("cifar_cnn", "resnet50", "resnet101", "vit_b_16"),
+        help="Model for --mode distributed.",
+    )
+    parser.add_argument(
+        "--distributed-image-size",
+        type=int,
+        default=32,
+        help="Input image size for distributed datasets. Use 224 for ResNet/ViT benchmark runs.",
+    )
+    parser.add_argument(
+        "--distributed-download",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow each participant to download missing distributed datasets locally.",
+    )
+    parser.add_argument(
+        "--distributed-amp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use autocast mixed precision in distributed training when supported.",
+    )
+    parser.add_argument(
+        "--distributed-eval-batches",
+        type=int,
+        default=10,
+        help="Validation batches to evaluate on rank 0 after each distributed epoch. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--distributed-parallel",
+        choices=("data", "pipeline"),
+        default="data",
+        help="Distributed parallelism strategy. Pipeline currently supports 2-stage ResNet50/ResNet101 runs.",
+    )
+    parser.add_argument(
+        "--distributed-pipeline-stages",
+        type=int,
+        default=2,
+        help="Pipeline stage count for --distributed-parallel pipeline.",
+    )
+    parser.add_argument(
+        "--distributed-microbatch-size",
+        type=int,
+        default=1,
+        help="Microbatch size for --distributed-parallel pipeline.",
+    )
+    parser.add_argument(
+        "--distributed-baseline-seconds",
+        type=float,
+        default=0.0,
+        help="Optional solo baseline seconds for speedup/efficiency reporting.",
+    )
+    parser.add_argument(
+        "--distributed-optimizations",
+        choices=OPTIMIZATION_CHOICES,
+        default=None,
+        help=(
+            "High-level data-parallel optimization mode. Overrides compression "
+            "and straggler enable/disable when provided."
+        ),
+    )
+    parser.add_argument(
+        "--distributed-compression",
+        choices=("none", "topk"),
+        default="none",
+        help="Optional gradient compression for data-parallel mode.",
+    )
+    parser.add_argument(
+        "--distributed-compress-ratio",
+        type=float,
+        default=0.01,
+        help="Top-K gradient ratio when --distributed-compression topk is enabled.",
+    )
+    parser.add_argument(
+        "--distributed-straggler-rank",
+        type=int,
+        default=-1,
+        help="Data-parallel experiment: rank to slow down. Use -1 to disable.",
+    )
+    parser.add_argument(
+        "--distributed-straggler-delay",
+        type=float,
+        default=0.0,
+        help="Data-parallel experiment: seconds to sleep per batch on the straggler rank.",
+    )
+    parser.add_argument(
+        "--distributed-leader-only",
+        action="store_true",
+        help="Distributed data-parallel baseline: ignore connected workers and run rank 0 only.",
+    )
+    parser.add_argument(
+        "--auto-start",
+        action="store_true",
+        help="Start training automatically after required workers connect.",
+    )
+    parser.add_argument(
+        "--exit-after-run",
+        action="store_true",
+        help="Exit the leader process after an auto-started run completes.",
+    )
+    parser.add_argument(
+        "--required-workers",
+        type=int,
+        default=0,
+        help="Workers required before --auto-start launches training.",
+    )
+    parser.add_argument(
+        "--start-delay-seconds",
+        type=float,
+        default=0.0,
+        help="Extra delay after required workers connect before --auto-start launches.",
+    )
+    parser.add_argument(
+        "--auto-start-timeout",
+        type=float,
+        default=600.0,
+        help="Seconds to wait for --required-workers before an auto-start run gives up. Use 0 for no timeout.",
+    )
     return parser.parse_args(argv)
 
 
 async def run(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     host = args.host or _tailscale_ipv4() or "0.0.0.0"
+    try:
+        optimization = resolve_optimizations(
+            selected=args.distributed_optimizations,
+            parallelism=args.distributed_parallel,
+            compression=args.distributed_compression,
+            straggler_rank=args.distributed_straggler_rank,
+            straggler_delay_seconds=args.distributed_straggler_delay,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[leader] {exc}") from exc
+    if args.distributed_parallel != "data" and args.distributed_optimizations not in {None, "none"}:
+        print("[leader] pipeline mode ignores data-parallel optimizations; using optimizations=none")
+
     leader = Leader(
         host=host,
         port=args.port,
@@ -1408,6 +1440,27 @@ async def run(argv: list[str] | None = None) -> None:
         distributed_batches_per_epoch=args.distributed_batches_per_epoch,
         distributed_samples=args.distributed_samples,
         distributed_timeout=args.distributed_timeout,
+        distributed_dataset=args.distributed_dataset,
+        distributed_model=args.distributed_model,
+        distributed_image_size=args.distributed_image_size,
+        distributed_download=args.distributed_download,
+        distributed_amp=args.distributed_amp,
+        distributed_eval_batches=args.distributed_eval_batches,
+        distributed_parallel=args.distributed_parallel,
+        distributed_pipeline_stages=args.distributed_pipeline_stages,
+        distributed_microbatch_size=args.distributed_microbatch_size,
+        distributed_baseline_seconds=args.distributed_baseline_seconds,
+        distributed_optimizations=optimization.label,
+        distributed_compression=optimization.compression,
+        distributed_compress_ratio=args.distributed_compress_ratio,
+        distributed_straggler_rank=optimization.straggler_rank,
+        distributed_straggler_delay=optimization.straggler_delay_seconds,
+        distributed_leader_only=args.distributed_leader_only,
+        auto_start=args.auto_start,
+        exit_after_run=args.exit_after_run,
+        required_workers=max(0, args.required_workers),
+        start_delay_seconds=max(0.0, args.start_delay_seconds),
+        auto_start_timeout=max(0.0, args.auto_start_timeout),
     )
 
     loop = asyncio.get_running_loop()

@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import contextlib
 import os
-import pickle
 import queue
 import socket
 import threading
@@ -14,8 +13,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .hardware import detect_hardware
-from .protocol import PROTOCOL_LIMIT, ProtocolError, read_binary, read_message, send_message
+from .communication.protocol import PROTOCOL_LIMIT, ProtocolError, read_message, send_message
+from .distributed.data_parallel.worker_session import (
+    drain_distributed_results,
+    handle_distributed_shard,
+    handle_distributed_shard_config,
+    run_distributed_training,
+    start_distributed_training,
+)
+from .distributed.pipeline_parallel.worker_session import start_pipeline_training
+from .system.hardware import detect_hardware
 
 DEFAULT_LEADER_HOST = "leader-macbook-pro.taila5426e.ts.net"
 DEFAULT_PORT = 8787
@@ -154,8 +161,14 @@ class Worker:
         if message_type == "distributed_shard":
             await self._handle_distributed_shard(message, reader, writer)
             return
+        if message_type == "distributed_shard_config":
+            await self._handle_distributed_shard_config(message, writer)
+            return
         if message_type == "distributed_train_start":
             await self._start_distributed_training(message, writer)
+            return
+        if message_type == "pipeline_train_start":
+            await self._start_pipeline_training(message, writer)
             return
         if message_type == "shutdown":
             reason = message.get("reason") or "leader closed the connection"
@@ -169,7 +182,7 @@ class Worker:
         message: dict[str, Any],
         writer: asyncio.StreamWriter,
     ) -> None:
-        from .training import train_assignment
+        from .federated.training import train_assignment
 
         assignment_id = str(message.get("assignment_id") or "")
         epoch = int(message.get("epoch") or 0)
@@ -202,72 +215,28 @@ class Worker:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        run_id = str(message.get("run_id") or "")
-        byte_count = int(message.get("bytes") or 0)
-        sample_count = int(message.get("samples") or 0)
-        print(
-            f"[worker] distributed shard: receiving {sample_count:,} sample(s), "
-            f"{byte_count / 1024 / 1024:.1f} MiB"
-        )
-        try:
-            raw = await read_binary(reader, expected_size=byte_count)
-            self.distributed_shard = pickle.loads(raw)
-            await self._send(
-                writer,
-                {
-                    "type": "distributed_shard_ready",
-                    "run_id": run_id,
-                    "worker_id": self.worker_id,
-                    "samples": sample_count,
-                },
-            )
-            print(f"[worker] distributed shard ready: {sample_count:,} sample(s)")
-        except Exception as exc:
-            await self._send(
-                writer,
-                {
-                    "type": "distributed_error",
-                    "run_id": run_id,
-                    "worker_id": self.worker_id,
-                    "error": f"shard receive failed: {exc}",
-                },
-            )
-            raise
+        await handle_distributed_shard(self, message, reader, writer)
+
+    async def _handle_distributed_shard_config(
+        self,
+        message: dict[str, Any],
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await handle_distributed_shard_config(self, message, writer)
 
     async def _start_distributed_training(
         self,
         message: dict[str, Any],
         writer: asyncio.StreamWriter,
     ) -> None:
-        run_id = str(message.get("run_id") or "")
-        if self.distributed_shard is None:
-            await self._send(
-                writer,
-                {
-                    "type": "distributed_error",
-                    "run_id": run_id,
-                    "worker_id": self.worker_id,
-                    "error": "training_start received before distributed_shard",
-                },
-            )
-            return
-        if self._distributed_training_task is not None and not self._distributed_training_task.done():
-            await self._send(
-                writer,
-                {
-                    "type": "distributed_error",
-                    "run_id": run_id,
-                    "worker_id": self.worker_id,
-                    "error": "distributed training is already running",
-                },
-            )
-            return
+        await start_distributed_training(self, message, writer)
 
-        self._distributed_stop_event = threading.Event()
-        self._distributed_training_task = asyncio.create_task(
-            self._run_distributed_training(message, writer, self._distributed_stop_event),
-            name="distributed-training",
-        )
+    async def _start_pipeline_training(
+        self,
+        message: dict[str, Any],
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await start_pipeline_training(self, message, writer)
 
     async def _run_distributed_training(
         self,
@@ -275,56 +244,7 @@ class Worker:
         writer: asyncio.StreamWriter,
         stop_event: threading.Event,
     ) -> None:
-        from .distributed_training import run_training
-
-        run_id = str(message.get("run_id") or "")
-        result_q: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
-        rank = int(message["rank"])
-        world_size = int(message["world_size"])
-        epochs = int(message["epochs"])
-        print(
-            f"[worker] distributed training start: rank={rank}, "
-            f"world_size={world_size}, epochs={epochs}"
-        )
-
-        training_task = asyncio.create_task(
-            asyncio.to_thread(
-                run_training,
-                rank,
-                world_size,
-                str(message["master_addr"]),
-                int(message["dist_port"]),
-                self.distributed_shard,
-                self.hardware.accelerator,
-                int(message["batch_size"]),
-                int(message["batches_per_epoch"]),
-                epochs,
-                result_q,
-                stop_event,
-                float(message.get("timeout_seconds") or 60.0),
-            )
-        )
-
-        try:
-            while not training_task.done():
-                await self._drain_distributed_results(run_id, result_q, writer)
-                await asyncio.sleep(0.25)
-            await training_task
-            await self._drain_distributed_results(run_id, result_q, writer)
-        except Exception as exc:
-            await self._send(
-                writer,
-                {
-                    "type": "distributed_error",
-                    "run_id": run_id,
-                    "worker_id": self.worker_id,
-                    "error": str(exc),
-                },
-            )
-            raise
-        finally:
-            if self._distributed_stop_event is stop_event:
-                self._distributed_stop_event = None
+        await run_distributed_training(self, message, writer, stop_event)
 
     async def _drain_distributed_results(
         self,
@@ -332,23 +252,7 @@ class Worker:
         result_q: queue.SimpleQueue[dict[str, Any]],
         writer: asyncio.StreamWriter,
     ) -> None:
-        while True:
-            try:
-                item = result_q.get_nowait()
-            except queue.Empty:
-                return
-            item["run_id"] = run_id
-            item["worker_id"] = self.worker_id
-            await self._send(writer, item)
-            if item.get("type") == "distributed_epoch":
-                print(
-                    f"[worker] distributed epoch {item['epoch']}: "
-                    f"loss={float(item['loss']):.4f}, device={item['device']}"
-                )
-            elif item.get("type") == "distributed_error":
-                print(f"[worker] distributed training failed: {item.get('error')}")
-            elif item.get("type") == "distributed_complete":
-                print("[worker] distributed training complete")
+        await drain_distributed_results(self, run_id, result_q, writer)
 
     async def _send(self, writer: asyncio.StreamWriter, message: dict[str, Any]) -> None:
         async with self._write_lock:

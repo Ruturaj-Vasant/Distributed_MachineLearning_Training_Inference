@@ -1,5 +1,5 @@
 Project handoff context for future chats
-Last updated: 2026-04-29
+Last updated: 2026-05-06
 
 Instruction for future Codex sessions
 Keep this file updated whenever meaningful project changes are made. Treat this
@@ -418,10 +418,10 @@ These are ignored by .gitignore and should normally not be committed.
 
 Known caveats and future work
 - The distributed stability fix has passed local two-env loopback testing.
-- Distributed mode currently logs loss but does not evaluate CIFAR validation
-  accuracy.
-- For a real demo, distributed mode should be tested across actual Tailscale
-  machines after the local fix is committed/pushed.
+- Distributed data-parallel mode now evaluates validation metrics on rank 0
+  when --distributed-eval-batches is greater than 0.
+- For a real demo/report, distributed data-parallel and pipeline mode still
+  need actual multi-machine Tailscale benchmark runs with recorded numbers.
 - If using a fresh install, torch_install.py currently pins torch==2.10.0 and
   torchvision==0.25.0. Verify package availability if install errors occur.
 - Worker process stays online only while its terminal/process is running.
@@ -468,17 +468,17 @@ Latest leader usability/reporting change
   stops that stale leader before starting the new one. If another unrelated
   process owns the port, the script exits with a clear message instead of
   killing it.
-- docs/index.html now uses ./leader_macos.sh for the Leader Mac command so the
-  stale leader cleanup is used by default.
+- docs/index.html now uses ./installations/leader_macos.sh for the Leader Mac
+  command so the stale leader cleanup is used by default.
 - pyproject.toml explicitly limits setuptools package discovery to
   dml_cluster*. This prevents ignored generated top-level directories such as
   runs/ from breaking pip install -e . during leader/worker bootstrap.
 - bootstrap_windows.ps1 now wraps venv Python/pip commands with Invoke-Checked
   so native command failures stop the script immediately. It also verifies that
-  dml_cluster.hardware and dml_cluster.worker import after pip install -e .
-  before running hardware detection. This was added after a Windows worker
-  reached python -m dml_cluster.hardware even though an earlier install step may
-  have failed.
+  dml_cluster.system.hardware and dml_cluster.worker import after pip install
+  -e . before running hardware detection. This was added after a Windows worker
+  reached hardware detection even though an earlier install step may have
+  failed.
 - bootstrap_windows.ps1 was further hardened after a Windows worker installed
   Python 3.11 via winget but could not find python.exe in the same PowerShell
   session. Find-Python311 now checks py.exe from PATH/common launcher locations,
@@ -493,8 +493,225 @@ Latest leader usability/reporting change
   current run. Distributed mode still uses startup flags for its different
   training knobs and rejects federated-only start options.
 
+Latest modularization change
+- Individual_Run/ is intentionally ignored for this refactor because it is used
+  separately for benchmarking.
+- Protocol code now lives in dml_cluster/communication/protocol.py.
+- Leader-side stream helpers now live in dml_cluster/communication/server.py.
+- Distributed CIFAR data sharding now lives in dml_cluster/distributed/data.py.
+- torch.distributed training now lives in dml_cluster/distributed/runner.py.
+- Distributed leader orchestration now lives in
+  dml_cluster/distributed/leader_session.py. Leader._run_distributed_training
+  delegates to that module.
+- Distributed worker shard receive/start/result-drain logic now lives in
+  dml_cluster/distributed/worker_session.py. worker.py delegates to that
+  module.
+- Federated MNIST training helpers now live in
+  dml_cluster/federated/training.py.
+- Federated leader orchestration now lives in
+  dml_cluster/federated/leader_session.py. Leader._run_federated_training
+  delegates to that module.
+- Run summary/table/ASCII graph writing now lives in
+  dml_cluster/distributed/reporting.py.
+- Distributed CNN model code now lives in dml_cluster/distributed/models.py.
+- Hardware detection and benchmark scoring now live in
+  dml_cluster/system/hardware.py.
+- PyTorch install selection now lives in dml_cluster/system/torch_install.py.
+- Installation/start scripts now live under installations/:
+  installations/leader_macos.sh
+  installations/bootstrap_macos.sh
+  installations/bootstrap_windows.ps1
+- The moved install scripts compute the project root as their parent directory,
+  so .venv, .data, .dml_worker_id, and editable installs still live at the repo
+  root.
+- Old compatibility wrapper modules were removed:
+  dml_cluster/protocol.py
+  dml_cluster/training.py
+  dml_cluster/distributed_data.py
+  dml_cluster/distributed_training.py
+- Old top-level utility modules were also moved out of the package root:
+  dml_cluster/hardware.py
+  dml_cluster/torch_install.py
+  dml_cluster/models.py
+  dml_cluster/reporting.py
+- README.md and docs/index.html now point users to the installations/ script
+  paths.
+- CLI behavior is intended to remain unchanged: dml-leader and dml-worker still
+  use the same command surface; direct script paths now use installations/.
+- Verification after modularization:
+  .venv/bin/python -m compileall dml_cluster passed.
+  ./installations/leader_macos.sh --help passed and resolved the repo root
+  correctly.
+  .venv/bin/python -m dml_cluster.worker --help passed.
+  New direct imports from communication/distributed/federated modules passed.
+  .venv/bin/python -m dml_cluster.system.hardware passed.
+  Local distributed leader-only smoke test passed with world_size=1,
+  samples=64, batches_per_epoch=1, loss about 2.3075 after wrapper removal.
+  Local two-process distributed test passed again after the system/distributed
+  utility move with leader rank 0 plus one local worker rank 1, world_size=2,
+  samples=64, batches_per_epoch=1, loss about 2.2991.
+
 Recommended immediate next steps
 1. Run a real multi-machine distributed test over Tailscale with epochs > 1.
 2. Add distributed CIFAR validation accuracy if needed for stronger reporting.
 3. Keep updating context.txt after every meaningful change.
 
+Latest heavy distributed training work
+- Distributed data-parallel files now live under
+  dml_cluster/distributed/data_parallel/:
+  leader_session.py, runner.py, worker_session.py.
+- dml_cluster/leader.py and dml_cluster/worker.py now import the data-parallel
+  leader/worker sessions from the data_parallel package.
+- Added dml_cluster/distributed/common/metrics.py with BenchmarkResult and
+  ProgressRow schemas modeled after Individual_Run/single-device-ml-benchmark.
+- Added dml_cluster/distributed/common/power.py with PowerSampler. It samples
+  NVIDIA power through nvidia-smi when available and records not_available_mps
+  or not_available_cpu on MPS/CPU.
+- Distributed reports now include richer fields such as throughput,
+  samples_per_second, seconds_per_batch, cumulative_loss, final_batch_loss,
+  val_loss, val_acc, val_top5_acc, power fields, model, dataset, image_size,
+  classes, participant_count, and optimizer config fields.
+- Added dml_cluster/distributed/datasets.py with dataset registry/support for
+  cifar10, cifar100, and tiny-imagenet-200. TinyImageNet download/extract
+  logic was adapted from Individual_Run. Heavy datasets are loaded locally on
+  each participant instead of being sent over the leader control channel.
+- Added model registry support in dml_cluster/distributed/models.py for
+  cifar_cnn, resnet50, resnet101, and vit_b_16.
+- Distributed leader CLI now supports:
+  --distributed-dataset {cifar10,cifar100,tiny-imagenet-200}
+  --distributed-model {cifar_cnn,resnet50,resnet101,vit_b_16}
+  --distributed-image-size
+  --distributed-download / --no-distributed-download
+  --distributed-amp / --no-distributed-amp
+  --distributed-eval-batches
+  --distributed-parallel {data,pipeline}
+  --distributed-pipeline-stages
+  --distributed-microbatch-size
+- Data-parallel mode now sends local shard config messages
+  (distributed_shard_config) to workers instead of sending image bytes for the
+  main distributed path. Workers confirm distributed_shard_ready after storing
+  the local shard config.
+- Current data-parallel runner can train local shards for cifar10/cifar100/
+  tiny-imagenet-200 using selected model registry entries.
+- Rank 0 now performs validation after each distributed epoch when
+  --distributed-eval-batches is greater than 0. This is currently tested with
+  CIFAR-10 validation/test split. TinyImageNet raw val layout is converted into
+  an ImageFolder-compatible .data/tiny-imagenet-200/val_classed directory when
+  the dataset is loaded.
+- ResNet101 data-parallel smoke test passed locally with leader rank 0 plus one
+  local worker rank 1 using CIFAR-10, image_size=64, samples=4, batch_size=1,
+  world_size=2, one epoch. Loss was about 2.6731.
+- Local data-parallel CIFAR-10/cifar_cnn test passed with local dataset loading
+  and validation metrics. A one-epoch world_size=2 run reported throughput
+  about 30.54 samples/s and val_acc 0.00% on one eval batch.
+- Real 2-stage pipeline-parallel execution is implemented under
+  dml_cluster/distributed/pipeline_parallel/. Current scope is exactly one
+  leader plus one worker, world_size=2, with resnet50/resnet101/vit_b_16.
+  For ResNet, rank 0 runs conv1/bn1/relu/maxpool/layer1/layer2 and rank 1
+  runs layer3/layer4/avgpool/fc. For ViT-B/16, rank 0 runs patch embedding,
+  class token insertion, positional embedding, dropout, and the first six
+  encoder blocks; rank 1 runs the remaining six encoder blocks, final layer
+  norm, and heads. Rank 1 computes cross-entropy loss, sends activation
+  gradients back to rank 0, and both stages step their own optimizer.
+- --distributed-parallel pipeline now sends a pipeline_train_start control
+  message to the worker. It reuses distributed_epoch/distributed_complete
+  result messages and the existing distributed run summary path.
+- Data-parallel straggler injection is available for experiments:
+  --distributed-straggler-rank <rank>
+  --distributed-straggler-delay <seconds>
+  The selected rank sleeps once per training batch before backward/all-reduce.
+  CSV rows include straggler_rank, straggler_delay_seconds, and
+  straggler_delay_total_seconds. Worker-side straggler totals are merged into
+  the leader CSV as worker_straggler_delay_total_seconds.
+- Added dml_cluster/distributed/common/optimization.py and the unified leader
+  flag:
+  --distributed-optimizations none|topk|straggler|topk-straggler
+  This maps to compression and straggler settings for data-parallel runs.
+  Existing low-level flags still work for tuning/backward compatibility.
+- Added dml_cluster/distributed/data_parallel/compression.py with a TopKCompressor
+  and CompressedTensor payload type. Top-K compression is now wired into
+  data-parallel gradient synchronization behind:
+  --distributed-optimizations topk
+  --distributed-compress-ratio 0.01
+  Default remains uncompressed all-reduce with --distributed-optimizations none.
+- Solo leader-only distributed runs now save baseline JSON files under
+  runs/baselines/. Matching multi-rank runs load those baselines automatically
+  and report speedup and efficiency. A manual override is available with:
+  --distributed-baseline-seconds.
+- Added non-interactive experiment controls to dml_cluster/leader.py:
+  --auto-start
+  --exit-after-run
+  --required-workers
+  --start-delay-seconds
+  --auto-start-timeout
+  --distributed-leader-only
+  These let scripts launch a run, wait for workers, start automatically, and
+  exit after saving reports.
+- Added experiments/run_experiments.sh. It runs the standard matrix:
+  solo data baseline, two-node data none, two-node data TopK, two-node data
+  straggler, two-node data TopK+straggler, and two-node pipeline. Use
+  --loopback for a small one-machine smoke matrix; loopback mode starts a local
+  worker after the solo baseline and binds the leader to 127.0.0.1.
+- Distributed terminal summaries now show speedup, efficiency, validation
+  accuracy, and compression ratio in addition to loss, throughput, and duration.
+- Distributed/federated summaries now attempt to save convergence PNGs beside
+  run CSVs. Plot generation uses matplotlib and pandas from requirements.txt
+  and skips cleanly if they are not installed.
+- Added dml_cluster/distributed/hybrid_parallel/runner.py with HybridRunConfig
+  validation scaffold. Real hybrid execution is not implemented because it
+  is being intentionally deferred and needs at least 4 ranks for a useful run.
+- Verification:
+  .venv/bin/python -m compileall dml_cluster passed.
+  Non-interactive leader-only auto-start smoke test passed with:
+  --auto-start --exit-after-run --required-workers 0 --distributed-leader-only.
+  It saved a rank-0 baseline and exited without typing start.
+  experiments/run_experiments.sh --loopback --model cifar_cnn --image-size 32
+  --samples 8 --batches 1 --eval-batches 0 --base-batch 2 --skip-pipeline
+  passed. It ran solo, two-node none, two-node TopK, two-node straggler, and
+  two-node TopK+straggler automatically with a local worker.
+  Focused leader+worker straggler auto-start test passed and confirmed the CSV
+  fields: optimizations=straggler, straggler_delay_seconds=0.1,
+  straggler_delay_total_seconds=0.1, and
+  worker_straggler_delay_total_seconds=0.1.
+  Data-parallel straggler smoke test passed with two local processes on
+  CIFAR-10/cifar_cnn, rank 1 delayed by 0.1 seconds per batch. Rank 1 reported
+  straggler_delay_total_seconds=0.1; rank 0 reported 0.0.
+  Direct ViT pipeline runner smoke test passed with two local processes on
+  CIFAR-10/vit_b_16, image_size=32, dataset_samples=1, batch_size=1,
+  microbatch_size=1, one batch, one epoch. Both ranks exited 0 and reported
+  loss about 2.3026.
+  Full leader+worker ViT pipeline smoke test passed on loopback using MPS with:
+  leader --port 8892 --dist-port 29653 --distributed-parallel pipeline
+  --distributed-model vit_b_16 --distributed-dataset cifar10
+  --distributed-image-size 32 --distributed-samples 1
+  --distributed-base-batch 1 --distributed-batches-per-epoch 1
+  --distributed-microbatch-size 1 --no-distributed-download. It reported loss
+  about 2.3026, throughput about 0.17 samples/s, and saved:
+  runs/distributed-20260506-211907-c40c8a0a3b0e-convergence.png.
+  Direct pipeline runner smoke test passed with two local processes on
+  CIFAR-10/resnet50, image_size=32, dataset_samples=2, batch_size=2,
+  microbatch_size=2, one batch, one epoch. Both ranks exited 0 and reported
+  loss about 2.3995.
+  Full leader+worker pipeline smoke test passed on loopback using MPS with:
+  leader --port 8891 --dist-port 29641 --distributed-parallel pipeline
+  --distributed-model resnet50 --distributed-dataset cifar10
+  --distributed-image-size 32 --distributed-samples 2
+  --distributed-base-batch 2 --distributed-batches-per-epoch 1
+  --distributed-microbatch-size 2 --no-distributed-download. It reported
+  loss about 2.7793 and throughput about 0.50 samples/s for the tiny smoke run.
+  A batch_size=1 smoke test failed because ResNet stage-1 BatchNorm receives
+  a [1, 512, 1, 1] tensor at image_size=32. Use batch/microbatch >= 2 for
+  small CIFAR smoke runs, or use larger image_size workloads such as 224.
+  Convergence plot generation passed after installing updated requirements in
+  .venv. It saved:
+  runs/distributed-20260506-210358-8ebde94beb86-convergence.png.
+  Data/model registry imports and model construction passed for cifar_cnn,
+  resnet101, and vit_b_16.
+  TopKCompressor smoke test passed.
+  Top-K compressed local data-parallel run passed with leader rank 0 plus one
+  local worker rank 1 on CIFAR-10/cifar_cnn. A test with
+  --distributed-compress-ratio 0.1 reported about 10x compression ratio and
+  completed successfully.
+  Solo baseline save/load path passed on a leader-only CIFAR-10/cifar_cnn run.
+  Pipeline split metadata smoke test passed.
+  HybridRunConfig smoke test passed.

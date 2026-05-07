@@ -3,7 +3,8 @@ Set-StrictMode -Version Latest
 
 $LeaderHost = if ($env:LEADER_HOST) { $env:LEADER_HOST } else { "leader-macbook-pro.taila5426e.ts.net" }
 $LeaderPort = if ($env:LEADER_PORT) { [int]$env:LEADER_PORT } else { 8787 }
-$ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectDir = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $VenvDir = Join-Path $ProjectDir ".venv"
 
 if (-not $env:PIP_NO_CACHE_DIR) {
@@ -448,7 +449,7 @@ function Ensure-Venv {
     Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "-r", (Join-Path $ProjectDir "requirements.txt"))
     Ensure-Torch $venvPython
     Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "-e", $ProjectDir)
-    Invoke-Checked -FilePath $venvPython -Arguments @("-c", "import dml_cluster.hardware, dml_cluster.worker")
+    Invoke-Checked -FilePath $venvPython -Arguments @("-c", "import dml_cluster.system.hardware, dml_cluster.worker")
 
     return $venvPython
 }
@@ -467,7 +468,7 @@ function Main {
     $venvPython = Ensure-Venv $python
 
     Write-Step "Detected hardware:"
-    Invoke-Checked -FilePath $venvPython -Arguments @("-m", "dml_cluster.hardware")
+    Invoke-Checked -FilePath $venvPython -Arguments @("-m", "dml_cluster.system.hardware")
 
     Write-Step "Starting worker inside virtual environment"
     & "$venvPython" -m dml_cluster.worker --leader $LeaderHost --port $LeaderPort --project-dir $ProjectDir
