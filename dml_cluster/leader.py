@@ -1276,7 +1276,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--distributed-timeout",
         type=float,
-        default=60.0,
+        default=120.0,
         help="Seconds to wait for shard acknowledgements and torch.distributed collectives.",
     )
     parser.add_argument(

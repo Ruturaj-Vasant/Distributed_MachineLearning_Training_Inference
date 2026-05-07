@@ -336,7 +336,7 @@ async def wait_for_worker_distributed_completion(
         return True
 
     ok = True
-    deadline = time.monotonic() + min(10.0, max(1.0, timeout_seconds))
+    deadline = time.monotonic() + min(60.0, max(10.0, timeout_seconds * 0.5))
     while completed_worker_ids != active_worker_ids and time.monotonic() < deadline:
         if not await drain_worker_distributed_results(distributed_q, completed_worker_ids, run_rows):
             ok = False

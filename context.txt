@@ -896,3 +896,73 @@ Latest Gloo full-mesh fix
   cifar_cnn --dataset cifar10 --image-size 32 --samples 16 --batches 1
   --eval-batches 0 --epochs 1 --base-batch 2 --skip-pipeline.
 - Pushed commit 03460ab Force Gloo to use Tailscale IPv4.
+
+Reliability and execution improvements (2026-05-07)
+These changes were diagnosed and applied after a review of the distributed code
+path, targeting failures that would occur on real multi-machine runs with
+ResNet101 and TinyImageNet.
+
+Problem 1: Dataset download inside training thread caused Gloo broadcast timeout.
+Before this fix, run_training() called _build_local_dataset_loader() AFTER
+dist.init_process_group(). If the worker needed to download TinyImageNet
+(237 MB), rank 0 (leader) would already be blocking on dist.broadcast() for the
+initial model weights while rank 1 (worker) was still downloading the dataset.
+The 60-second Gloo collective timeout would fire before the worker reached
+dist.broadcast().
+Fix: dml_cluster/distributed/data_parallel/runner.py now builds the DataLoader
+(calling load_dataset, including any download) BEFORE calling
+dist.init_process_group(). A failed dataset load now emits distributed_error
+immediately and returns without ever entering the process group. Dataset load
+errors are logged as "dataset load: <exc>" to distinguish them from rendezvous
+errors.
+
+Problem 2: Default Gloo collective timeout was 60 seconds — too short for
+ResNet101 (176 MB model broadcast) on slow links and for multi-machine runs.
+Fix: DEFAULT_DIST_TIMEOUT_SECONDS in runner.py raised from 60.0 to 120.0.
+--distributed-timeout default in leader.py CLI raised from 60.0 to 120.0.
+experiments/run_experiments.sh now passes --distributed-timeout with a default
+of DIST_TIMEOUT=300 for real runs, and 120 for --loopback mode.
+
+Problem 3: wait_for_worker_distributed_completion was capped at 10 seconds.
+After the leader's training thread finished, it only waited min(10, timeout)
+seconds for workers to send distributed_complete. For long runs or slow links
+this caused "distributed run ended before completion messages" warnings and
+lost the final worker metrics row in the CSV.
+Fix: dml_cluster/distributed/data_parallel/leader_session.py now waits
+min(60.0, max(10.0, timeout_seconds * 0.5)) seconds, scaling with the run
+timeout up to a 60-second cap.
+
+Problem 4: TopK gradient compression issued 2×N_params Gloo collectives per
+batch. For ResNet101 with ~339 named parameters this was 678 separate
+all_gather calls per batch, each with Tailscale RTT overhead.
+Fix: _topk_allreduce_grads() in runner.py now collects all per-parameter
+compressed payloads first, concatenates them into two flat tensors (indices and
+values), does exactly 2 dist.all_gather calls for the entire batch, then scatters
+the reduced values back to each parameter using offset slices.
+
+Problem 5: Same dist port reused across all 5 experiments in run_experiments.sh.
+TCP TIME_WAIT state after dist.destroy_process_group() could block the next
+experiment from binding the port.
+Fix: run_experiments.sh now passes a unique --dist-port per experiment:
+EXP 1: DIST_PORT+0, EXP 2: DIST_PORT+2, ..., EXP 6: DIST_PORT+10.
+The base DIST_PORT is still passed in leader_base but overridden per experiment
+via argparse last-wins semantics.
+
+Verification:
+.venv/bin/python -m compileall dml_cluster passed.
+bash -n experiments/run_experiments.sh experiments/*.sh passed.
+Solo leader-only ResNet101+TinyImageNet smoke test passed:
+  world_size=1, samples=32, batches=1, eval_batches=0, epochs=1
+  loss=6.3188, throughput=3.72 samples/s, device=mps.
+Full five-experiment loopback matrix (leader + local worker, world_size=2)
+with ResNet101+TinyImageNet passed:
+  ./experiments/run_experiments.sh --loopback --model resnet101
+  --dataset tiny-imagenet-200 --image-size 224 --samples 32 --batches 1
+  --eval-batches 0 --epochs 1 --base-batch 2 --microbatch 1 --skip-pipeline
+EXP 1 (solo): loss=6.3188, throughput=3.72 samples/s
+EXP 2 (data none): loss=6.3282, throughput=1.61 samples/s, world_size=2
+EXP 3 (data topk): loss=6.3282, throughput=3.87 samples/s, compression=100x
+EXP 4 (straggler): loss=6.3282, throughput=6.36 samples/s
+EXP 5 (topk+straggler): loss=6.3282, throughput=4.41 samples/s
+Summary folder: runs/experiment_summary_tiny_imagenet_200_resnet101_20260507-155448/
+All descriptor-named per-run folders saved with CSV/TXT/PNG/manifest.

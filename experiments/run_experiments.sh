@@ -21,6 +21,7 @@ MASTER_ADDR="leader-macbook-pro.taila5426e.ts.net"
 HOST=""
 LEADER_PORT=8787
 DIST_PORT=29501
+DIST_TIMEOUT=300
 REQUIRED_WORKERS=1
 START_DELAY=2
 AUTO_TIMEOUT=900
@@ -48,6 +49,7 @@ Options:
   --leader-port N            Leader control port. Default: 8787.
   --dist-port N              torch.distributed port. Default: 29501.
   --straggler-delay SEC      Straggler sleep per batch. Default: 3.0.
+  --dist-timeout SEC         Gloo collective timeout in seconds. Default: 300 (120 in loopback).
   --required-workers N       Required workers for distributed experiments. Default: 1.
   --only-pipeline            Run only the pipeline experiment.
   --skip-pipeline            Skip pipeline experiment.
@@ -62,6 +64,7 @@ while [[ $# -gt 0 ]]; do
       HOST="127.0.0.1"
       LEADER_PORT=8893
       DIST_PORT=29661
+      DIST_TIMEOUT=120
       SAMPLES=64
       BATCHES=2
       EVAL_BATCHES=1
@@ -85,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --leader-port) LEADER_PORT="$2"; shift 2 ;;
     --dist-port) DIST_PORT="$2"; shift 2 ;;
     --straggler-delay) STRAGGLER_DELAY="$2"; shift 2 ;;
+    --dist-timeout) DIST_TIMEOUT="$2"; shift 2 ;;
     --required-workers) REQUIRED_WORKERS="$2"; shift 2 ;;
     --only-pipeline) RUN_DATA=0; RUN_PIPELINE=1; shift ;;
     --skip-pipeline) RUN_PIPELINE=0; shift ;;
@@ -116,7 +120,7 @@ leader_base=(
   --distributed-eval-batches "${EVAL_BATCHES}"
   --epochs "${EPOCHS}"
   --dist-master-addr "${MASTER_ADDR}"
-  --dist-port "${DIST_PORT}"
+  --distributed-timeout "${DIST_TIMEOUT}"
   --auto-start
   --exit-after-run
   --start-delay-seconds "${START_DELAY}"
@@ -150,7 +154,10 @@ start_loopback_worker() {
 }
 
 if [[ "${RUN_DATA}" -eq 1 ]]; then
+  # Each experiment gets its own dist port (+2 per step) so TCP TIME_WAIT from the
+  # previous run cannot block the next one.
   run_exp "EXP 1: solo data-parallel baseline" \
+    --dist-port "$((DIST_PORT + 0))" \
     --required-workers 0 \
     --distributed-leader-only \
     --distributed-parallel data \
@@ -159,17 +166,20 @@ if [[ "${RUN_DATA}" -eq 1 ]]; then
   start_loopback_worker
 
   run_exp "EXP 2: two-node data parallel, no optimization" \
+    --dist-port "$((DIST_PORT + 2))" \
     --required-workers "${REQUIRED_WORKERS}" \
     --distributed-parallel data \
     --distributed-optimizations none
 
   run_exp "EXP 3: two-node data parallel, TopK" \
+    --dist-port "$((DIST_PORT + 4))" \
     --required-workers "${REQUIRED_WORKERS}" \
     --distributed-parallel data \
     --distributed-optimizations topk \
     --distributed-compress-ratio "${COMPRESS_RATIO}"
 
   run_exp "EXP 4: two-node data parallel, straggler" \
+    --dist-port "$((DIST_PORT + 6))" \
     --required-workers "${REQUIRED_WORKERS}" \
     --distributed-parallel data \
     --distributed-optimizations straggler \
@@ -177,6 +187,7 @@ if [[ "${RUN_DATA}" -eq 1 ]]; then
     --distributed-straggler-delay "${STRAGGLER_DELAY}"
 
   run_exp "EXP 5: two-node data parallel, TopK + straggler" \
+    --dist-port "$((DIST_PORT + 8))" \
     --required-workers "${REQUIRED_WORKERS}" \
     --distributed-parallel data \
     --distributed-optimizations topk-straggler \
@@ -189,6 +200,7 @@ fi
 
 if [[ "${RUN_PIPELINE}" -eq 1 ]]; then
   run_exp "EXP 6: two-node pipeline parallel" \
+    --dist-port "$((DIST_PORT + 10))" \
     --required-workers "${REQUIRED_WORKERS}" \
     --distributed-parallel pipeline \
     --distributed-microbatch-size "${MICROBATCH}" \

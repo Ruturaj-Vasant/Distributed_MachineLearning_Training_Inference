@@ -19,7 +19,7 @@ from ..datasets import load_dataset, shard_dataset
 from ..models import CifarCnn, build_model
 from .compression import TopKCompressor
 
-DEFAULT_DIST_TIMEOUT_SECONDS = 60.0
+DEFAULT_DIST_TIMEOUT_SECONDS = 120.0
 DATASET_NAME = "cifar10"
 MODEL_NAME = "cifar_cnn"
 IMAGE_SIZE = 32
@@ -70,27 +70,40 @@ def _topk_allreduce_grads(
     device: torch.device,
     compressor: TopKCompressor,
 ) -> dict[str, float]:
-    raw_numel = 0
-    compressed_numel = 0
+    # Collect compressed payloads for every parameter that has a gradient.
+    entries: list[tuple[str, torch.nn.Parameter, Any]] = []
     for name, param in model.named_parameters():
         if param.grad is None:
             continue
-        payload = compressor.compress(name, param.grad)
-        raw_numel += payload.original_numel
-        compressed_numel += payload.compressed_numel
+        entries.append((name, param, compressor.compress(name, param.grad)))
 
-        local_indices = payload.indices.to(dtype=torch.int64).contiguous()
-        local_values = payload.values.to(dtype=torch.float32).contiguous()
-        gathered_indices = [torch.empty_like(local_indices) for _ in range(world_size)]
-        gathered_values = [torch.empty_like(local_values) for _ in range(world_size)]
-        dist.all_gather(gathered_indices, local_indices)
-        dist.all_gather(gathered_values, local_values)
+    if not entries:
+        return {"raw_gradient_numel": 0.0, "compressed_gradient_numel": 0.0, "compression_ratio": 1.0}
 
+    raw_numel = sum(p.original_numel for _, _, p in entries)
+    compressed_numel = sum(p.compressed_numel for _, _, p in entries)
+
+    # Batch all per-parameter indices and values into two flat tensors so we
+    # need exactly 2 all_gather calls per batch instead of 2×N_params.
+    # All ranks produce the same k per parameter (same model, same compress_ratio).
+    local_indices = torch.cat([p.indices.to(dtype=torch.int64).contiguous() for _, _, p in entries])
+    local_values = torch.cat([p.values.to(dtype=torch.float32).contiguous() for _, _, p in entries])
+
+    gathered_indices = [torch.empty_like(local_indices) for _ in range(world_size)]
+    gathered_values = [torch.empty_like(local_values) for _ in range(world_size)]
+    dist.all_gather(gathered_indices, local_indices)
+    dist.all_gather(gathered_values, local_values)
+
+    # Scatter reduced gradients back to each parameter using slice offsets.
+    offset = 0
+    for _name, param, payload in entries:
+        k = payload.compressed_numel
         reduced = torch.zeros(payload.original_numel, dtype=torch.float32)
-        for indices, values in zip(gathered_indices, gathered_values):
-            reduced[indices] += values
+        for rank_indices, rank_values in zip(gathered_indices, gathered_values):
+            reduced[rank_indices[offset : offset + k]] += rank_values[offset : offset + k]
         reduced /= world_size
         param.grad.copy_(reduced.reshape(payload.shape).to(device=device, dtype=param.grad.dtype))
+        offset += k
 
     return {
         "raw_gradient_numel": float(raw_numel),
@@ -333,6 +346,34 @@ def run_training(
         straggler_rank = -1
         straggler_delay_seconds = 0.0
 
+    # Load the dataset shard BEFORE init_process_group so any dataset download
+    # (e.g., TinyImageNet 237 MB) completes before the Gloo rendezvous clock starts.
+    # This prevents the leader from timing out on dist.broadcast while the worker
+    # is still fetching data.
+    print(f"[distributed] rank {rank} loading dataset shard", flush=True)
+    try:
+        if isinstance(shard, dict):
+            loader = _build_local_dataset_loader(shard, batch_size, batches_per_epoch)
+            eval_loader = (
+                _build_eval_loader(shard, batch_size, int(shard.get("eval_batches") or 0))
+                if rank == 0
+                else None
+            )
+        else:
+            loader = _build_loader(shard, batch_size, batches_per_epoch)
+            eval_loader = None
+    except Exception as exc:
+        result_q.put(
+            {
+                "type": "distributed_error",
+                "epoch": 0,
+                "rank": rank,
+                "error": f"dataset load: {exc}",
+            }
+        )
+        return
+    print(f"[distributed] rank {rank} dataset shard ready", flush=True)
+
     pg_options, gloo_hostname = create_gloo_pg_options(master_addr, dist, timeout)
     if gloo_hostname:
         print(f"[distributed] rank {rank} using Gloo device hostname={gloo_hostname}", flush=True)
@@ -371,16 +412,6 @@ def run_training(
         torch.manual_seed(42)
         model = build_model(model_name, classes, image_size).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-        loader = (
-            _build_local_dataset_loader(shard, batch_size, batches_per_epoch)
-            if isinstance(shard, dict)
-            else _build_loader(shard, batch_size, batches_per_epoch)
-        )
-        eval_loader = (
-            _build_eval_loader(shard, batch_size, int(shard.get("eval_batches") or 0))
-            if isinstance(shard, dict) and rank == 0
-            else None
-        )
 
         print(f"[distributed] rank {rank} broadcasting model", flush=True)
         _broadcast_model(model, device)
