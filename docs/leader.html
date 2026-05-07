@@ -69,6 +69,36 @@ chmod +x installations/leader_macos.sh
         </article>
       </section>
 
+      <section class="section" aria-label="Supported datasets and models">
+        <div class="section-head">
+          <h2 class="section-title">Supported Workloads</h2>
+          <p class="section-note">
+            These values can be used with
+            <code>--distributed-dataset</code> and
+            <code>--distributed-model</code>.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="card">
+            <h2>Datasets</h2>
+            <p><code>cifar10</code> for quick checks and baseline experiments.</p>
+            <p><code>cifar100</code> for a harder image-classification run.</p>
+            <p><code>tiny-imagenet-200</code> for the main research experiments.</p>
+          </article>
+          <article class="card">
+            <h2>Models</h2>
+            <p><code>cifar_cnn</code> for smoke tests and local debugging.</p>
+            <p><code>resnet50</code> and <code>resnet101</code> for heavier data-parallel and pipeline runs.</p>
+            <p><code>vit_b_16</code> for ViT data-parallel and 2-stage pipeline experiments.</p>
+          </article>
+        </div>
+        <p class="callout">
+          For TinyImageNet with ResNet or ViT, use
+          <code>--distributed-image-size 224</code>. Every worker loads the
+          dataset locally under <code>.data/</code>.
+        </p>
+      </section>
+
       <section class="section" aria-label="Federated commands">
         <div class="section-head">
           <h2 class="section-title">Federated Mode</h2>

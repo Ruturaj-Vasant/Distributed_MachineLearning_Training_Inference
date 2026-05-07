@@ -688,6 +688,10 @@ Latest GitHub Pages update
   --distributed-optimizations flag.
 - HTML parser smoke check passed for docs/index.html, docs/leader.html, and
   docs/worker.html.
+- docs/leader.html now includes a Supported Workloads section listing
+  distributed datasets (cifar10, cifar100, tiny-imagenet-200), models
+  (cifar_cnn, resnet50, resnet101, vit_b_16), and the TinyImageNet image-size
+  note.
   Data-parallel straggler smoke test passed with two local processes on
   CIFAR-10/cifar_cnn, rank 1 delayed by 0.1 seconds per batch. Rank 1 reported
   straggler_delay_total_seconds=0.1; rank 0 reported 0.0.
