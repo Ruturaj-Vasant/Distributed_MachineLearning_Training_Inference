@@ -21,6 +21,7 @@ from .distributed.data_parallel.worker_session import (
     run_distributed_training,
     start_distributed_training,
 )
+from .distributed.data_parallel.parameter_server.worker_session import start_parameter_server_round
 from .distributed.pipeline_parallel.worker_session import start_pipeline_training
 from .system.hardware import detect_hardware
 
@@ -167,6 +168,9 @@ class Worker:
         if message_type == "distributed_train_start":
             await self._start_distributed_training(message, writer)
             return
+        if message_type == "parameter_server_round_start":
+            await self._start_parameter_server_round(message, reader, writer)
+            return
         if message_type == "pipeline_train_start":
             await self._start_pipeline_training(message, writer)
             return
@@ -237,6 +241,14 @@ class Worker:
         writer: asyncio.StreamWriter,
     ) -> None:
         await start_pipeline_training(self, message, writer)
+
+    async def _start_parameter_server_round(
+        self,
+        message: dict[str, Any],
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await start_parameter_server_round(self, message, reader, writer)
 
     async def _run_distributed_training(
         self,

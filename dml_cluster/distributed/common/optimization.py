@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-OPTIMIZATION_CHOICES = ("none", "topk", "straggler", "topk-straggler")
+OPTIMIZATION_CHOICES = ("none", "topk", "straggler", "topk-straggler", "fp16")
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,8 @@ def resolve_optimizations(
             resolved_straggler_rank = -1
             resolved_straggler_delay = 0.0
 
+    if parallelism == "data" and label == "fp16":
+        raise ValueError("fp16 optimization is only supported with --distributed-parallel parameter-server")
     if resolved_compression not in {"none", "topk"}:
         raise ValueError(f"unsupported compression mode: {resolved_compression}")
     if resolved_straggler_rank < 0:
@@ -63,6 +65,16 @@ def resolve_optimizations(
         raise ValueError(
             "straggler optimization needs --distributed-straggler-rank >= 0 "
             "and --distributed-straggler-delay > 0"
+        )
+
+    if parallelism == "parameter-server":
+        if label not in {"none", "fp16"}:
+            raise ValueError("parameter-server supports --distributed-optimizations none or fp16")
+        return DistributedOptimizationConfig(
+            label=label,
+            compression="none",
+            straggler_rank=-1,
+            straggler_delay_seconds=0.0,
         )
 
     if parallelism != "data":

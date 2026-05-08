@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .communication.protocol import PROTOCOL_LIMIT, ProtocolError, read_message, send_message
+from .communication.protocol import PROTOCOL_LIMIT, ProtocolError, read_binary, read_message, send_message
 from .communication.server import close_writer, format_peer
 from .distributed.common.optimization import OPTIMIZATION_CHOICES, resolve_optimizations
 from .distributed.data_parallel.leader_session import (
@@ -27,6 +27,7 @@ from .distributed.data_parallel.leader_session import (
     send_distributed_shards,
     wait_for_worker_distributed_completion,
 )
+from .distributed.data_parallel.parameter_server.leader_session import run_parameter_server_training
 from .distributed.pipeline_parallel.leader_session import run_pipeline_training
 from .distributed.pipeline_parallel.runner import PipelineParallelNotImplementedError
 from .distributed.reporting import metric_bars, print_and_save_run_summary
@@ -261,7 +262,7 @@ class Leader:
 
             while True:
                 message = await read_message(reader)
-                await self._handle_worker_message(worker_id, message)
+                await self._handle_worker_message(worker_id, message, reader)
         except (EOFError, ConnectionError, asyncio.TimeoutError, ProtocolError) as exc:
             if worker_id:
                 print(f"[leader] worker {worker_id} disconnected: {exc}")
@@ -270,7 +271,12 @@ class Leader:
         finally:
             await self._remove_worker(worker_id, writer)
 
-    async def _handle_worker_message(self, worker_id: str, message: dict[str, Any]) -> None:
+    async def _handle_worker_message(
+        self,
+        worker_id: str,
+        message: dict[str, Any],
+        reader: asyncio.StreamReader,
+    ) -> None:
         message_type = message.get("type")
         if message_type == "heartbeat":
             async with self._lock:
@@ -303,6 +309,17 @@ class Leader:
                 await waiter.put(message)
             else:
                 print(f"[leader] ignored distributed message from {worker_id}: {message_type}")
+            return
+        if message_type == "parameter_server_update":
+            byte_count = int(message.get("update_bytes") or message.get("update_upload_bytes") or 0)
+            payload = await read_binary(reader, expected_size=byte_count)
+            message["_payload"] = payload
+            run_id = str(message.get("run_id") or "")
+            waiter = self._distributed_waiters.get(run_id)
+            if waiter is not None:
+                await waiter.put(message)
+            else:
+                print(f"[leader] ignored parameter-server update from {worker_id}")
             return
         print(f"[leader] ignored unknown message from {worker_id}: {message_type}")
 
@@ -536,6 +553,9 @@ class Leader:
                 await run_pipeline_training(self, epochs)
             except (PipelineParallelNotImplementedError, ValueError) as exc:
                 print(f"[leader] {exc}")
+            return
+        if self.distributed_parallel == "parameter-server":
+            await run_parameter_server_training(self, epochs)
             return
         await run_distributed_training(self, epochs)
 
@@ -1066,6 +1086,18 @@ class Leader:
             "raw_gradient_numel",
             "compressed_gradient_numel",
             "compression_ratio",
+            "model_download_bytes",
+            "update_upload_bytes",
+            "total_communication_bytes",
+            "model_download_mb",
+            "update_upload_mb",
+            "total_communication_mb",
+            "raw_update_bytes",
+            "compressed_update_bytes",
+            "aggregation_seconds",
+            "leader_train_seconds",
+            "worker_train_seconds",
+            "workers_used",
             "straggler_rank",
             "straggler_delay_seconds",
             "straggler_delay_total_seconds",
@@ -1153,6 +1185,8 @@ class Leader:
         compression = str(row.get("compression") or "none")
         if compression == "topk":
             return f"topk {float(row.get('compression_ratio') or 1.0):.1f}x"
+        if compression == "fp16":
+            return f"fp16 {float(row.get('compression_ratio') or 1.0):.1f}x"
         return "none"
 
     @staticmethod
@@ -1318,9 +1352,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--distributed-parallel",
-        choices=("data", "pipeline"),
+        choices=("data", "parameter-server", "pipeline"),
         default="data",
-        help="Distributed parallelism strategy. Pipeline currently supports 2-stage ResNet50/ResNet101 runs.",
+        help=(
+            "Distributed parallelism strategy. data uses Gloo all-reduce; "
+            "parameter-server uses the leader-worker control channel; pipeline "
+            "currently supports 2-stage ResNet50/ResNet101 runs."
+        ),
     )
     parser.add_argument(
         "--distributed-pipeline-stages",
@@ -1426,7 +1464,7 @@ async def run(argv: list[str] | None = None) -> None:
         )
     except ValueError as exc:
         raise SystemExit(f"[leader] {exc}") from exc
-    if args.distributed_parallel != "data" and args.distributed_optimizations not in {None, "none"}:
+    if args.distributed_parallel == "pipeline" and args.distributed_optimizations not in {None, "none"}:
         print("[leader] pipeline mode ignores data-parallel optimizations; using optimizations=none")
 
     leader = Leader(

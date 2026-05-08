@@ -1011,3 +1011,50 @@ EXP 4 (straggler): loss=6.3282, throughput=6.36 samples/s
 EXP 5 (topk+straggler): loss=6.3282, throughput=4.41 samples/s
 Summary folder: runs/experiment_summary_tiny_imagenet_200_resnet101_20260507-155448/
 All descriptor-named per-run folders saved with CSV/TXT/PNG/manifest.
+
+Parameter-server data-parallel implementation
+- Data-parallel code is now split internally:
+  dml_cluster/distributed/data_parallel/all_reduce/
+    Gloo all-reduce implementation moved here.
+  dml_cluster/distributed/data_parallel/parameter_server/
+    New leader-coordinated parameter-server implementation.
+- Compatibility wrapper modules remain at:
+  dml_cluster/distributed/data_parallel/runner.py
+  dml_cluster/distributed/data_parallel/leader_session.py
+  dml_cluster/distributed/data_parallel/worker_session.py
+  dml_cluster/distributed/data_parallel/compression.py
+  so existing imports continue to work.
+- New CLI option:
+  --distributed-parallel parameter-server
+- Parameter-server mode avoids torch.distributed/Gloo. It uses the existing
+  leader-worker TCP control channel on port 8787 plus binary payloads:
+  leader sends parameter_server_round_start + model state_dict bytes.
+  worker trains its local shard for the configured batches/epoch.
+  worker returns parameter_server_update + updated state_dict bytes.
+  leader aggregates states weighted by sample count and evaluates rank 0.
+- Supported parameter-server optimizations:
+  --distributed-optimizations none
+  --distributed-optimizations fp16
+  fp16 serializes floating state_dict tensors as float16 for model download and
+  worker upload, typically reducing communication by about 2x.
+- CSV/TXT/manifest output remains in descriptor-named runs/ folders. New
+  parameter-server CSV fields include model_download_bytes, update_upload_bytes,
+  total_communication_bytes, model_download_mb, update_upload_mb,
+  total_communication_mb, raw_update_bytes, compressed_update_bytes,
+  aggregation_seconds, leader_train_seconds, worker_train_seconds, workers_used.
+- Added experiment script:
+  experiments/smoke_resnet101_parameter_server_tinyimagenet.sh
+  It runs solo parameter-server baseline, two-node parameter-server none, and
+  two-node parameter-server fp16, then builds the experiment summary.
+- Verification:
+  .venv/bin/python -m compileall dml_cluster passed.
+  bash -n experiments/*.sh passed.
+  Leader-only parameter-server CIFAR-10/cifar_cnn smoke passed and saved
+  CSV/TXT/manifest/PNG.
+  Loopback leader+worker parameter-server smoke passed:
+    --distributed-parallel parameter-server --distributed-optimizations fp16
+    dataset=cifar10 model=cifar_cnn samples=16 batches=1 epochs=1.
+    It showed fp16 compression around 2.0x and saved a parameter_server_fp16
+    descriptor run folder.
+  Loopback leader+worker all-reduce smoke passed after moving code into
+  data_parallel/all_reduce/.
