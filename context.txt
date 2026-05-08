@@ -1058,3 +1058,19 @@ Parameter-server data-parallel implementation
     descriptor run folder.
   Loopback leader+worker all-reduce smoke passed after moving code into
   data_parallel/all_reduce/.
+
+Parameter-server dataset preparation order
+- Worker shard config handling now prepares/downloads the local dataset before
+  sending distributed_shard_ready. This means for parameter-server mode the
+  leader waits for the worker dataset to exist locally before sending model
+  weights for the first round.
+- Implementation location:
+  dml_cluster/distributed/data_parallel/all_reduce/worker_session.py
+  handle_distributed_shard_config()
+  This shared handler is used by both all-reduce and parameter-server shard
+  setup.
+- Verification:
+  .venv/bin/python -m compileall
+  dml_cluster/distributed/data_parallel/all_reduce/worker_session.py
+  dml_cluster/worker.py passed.
+  Loopback leader+worker parameter-server fp16 smoke passed after the change.

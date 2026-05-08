@@ -9,6 +9,7 @@ from typing import Any
 
 from ....communication.protocol import read_binary
 from ...common.network import _tailscale_ipv4
+from ...datasets import load_dataset
 from .runner import run_training
 
 
@@ -65,6 +66,32 @@ async def handle_distributed_shard_config(
     # the worker's actual project directory so dataset loading resolves to a local
     # path instead of the leader's unreachable home directory.
     worker.distributed_shard["project_dir"] = str(worker.project_dir)
+    print(
+        f"[worker] preparing local dataset before shard ready: "
+        f"{message.get('dataset')}/{message.get('model')} {start:,}:{stop:,} "
+        f"({sample_count:,} sample(s))"
+    )
+    try:
+        await asyncio.to_thread(
+            load_dataset,
+            str(worker.distributed_shard["dataset"]),
+            worker.project_dir,
+            bool(worker.distributed_shard.get("download")),
+            int(worker.distributed_shard.get("dataset_samples") or 0),
+            int(worker.distributed_shard.get("image_size") or 32),
+        )
+    except Exception as exc:
+        await worker._send(
+            writer,
+            {
+                "type": "distributed_error",
+                "run_id": run_id,
+                "worker_id": worker.worker_id,
+                "error": f"dataset prepare failed: {exc}",
+            },
+        )
+        print(f"[worker] distributed dataset prepare failed: {exc}")
+        return
     await worker._send(
         writer,
         {
@@ -75,7 +102,7 @@ async def handle_distributed_shard_config(
         },
     )
     print(
-        f"[worker] distributed local shard ready: "
+        f"[worker] distributed local dataset and shard ready: "
         f"{message.get('dataset')}/{message.get('model')} {start:,}:{stop:,} "
         f"({sample_count:,} sample(s))"
     )
